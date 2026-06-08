@@ -1,0 +1,4 @@
+# Copy to src/main/resources/application-local.properties
+
+GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
+MICROSOFT_CLIENT_ID=your-microsoft-application-client-id
