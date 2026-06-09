@@ -14,4 +14,7 @@ public class AuthResponse {
     private boolean emailVerified;
     private boolean mfaEnabled;
     private String phone;
+    private String avatarUrl;
+    private String preferredPaymentMethod;
+    private String createdAt;
 }

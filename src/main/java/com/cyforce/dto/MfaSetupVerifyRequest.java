@@ -6,4 +6,5 @@ import lombok.Data;
 public class MfaSetupVerifyRequest {
     private String userId;
     private String code;
+    private String secret;
 }

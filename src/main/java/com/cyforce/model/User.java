@@ -32,6 +32,12 @@ public class User {
 
     private String companyName;
 
+    private String avatarUrl;
+
+    private String logoUrl;
+
+    private String preferredPaymentMethod;
+
     private String customerType;
 
     private String role;
@@ -47,6 +53,8 @@ public class User {
     private LocalDateTime createdAt;
 
     private LocalDateTime updatedAt;
+
+    private LocalDateTime lastLoginAt;
 
     private LocalDateTime emailVerifiedAt;
 

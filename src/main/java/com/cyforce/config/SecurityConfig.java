@@ -23,7 +23,21 @@ public class SecurityConfig {
         http
                 .csrf(csrf -> csrf.disable())
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/auth/**", "/api/test/**").permitAll()
+                        .requestMatchers(
+                                "/api/auth/**",
+                                "/api/users/**",
+                                "/api/dashboard/**",
+                                "/api/notifications/**",
+                                "/api/admin/**",
+                                "/api/customer/**",
+                                "/api/support/**",
+                                "/api/sales/**",
+                                "/api/supervisor/**",
+                                "/api/products/**",
+                                "/api/payments/**",
+                                "/uploads/**",
+                                "/api/test/**"
+                        ).permitAll()
                         .anyRequest().authenticated()
                 )
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS));

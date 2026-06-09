@@ -9,6 +9,7 @@ import com.cyforce.dto.RegisterRequest;
 import com.cyforce.service.AuthService;
 import com.cyforce.service.EmailService;
 import com.cyforce.service.MfaService;
+import com.cyforce.service.UserService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -22,11 +23,25 @@ public class AuthController {
     private final AuthService authService;
     private final EmailService emailService;
     private final MfaService mfaService;
+    private final UserService userService;
 
-    public AuthController(AuthService authService, EmailService emailService, MfaService mfaService) {
+    public AuthController(AuthService authService, EmailService emailService, MfaService mfaService, UserService userService) {
         this.authService = authService;
         this.emailService = emailService;
         this.mfaService = mfaService;
+        this.userService = userService;
+    }
+
+    @GetMapping("/me")
+    public ResponseEntity<?> me(@RequestHeader(value = "X-User-Id", required = false) String userId) {
+        if (userId == null || userId.isBlank()) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Not authenticated"));
+        }
+        try {
+            return ResponseEntity.ok(userService.getProfile(userId));
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", e.getMessage()));
+        }
     }
 
     @PostMapping("/login")
@@ -128,8 +143,18 @@ public class AuthController {
     @PostMapping("/mfa/setup/verify")
     public ResponseEntity<?> verifyMfaSetup(@RequestBody MfaSetupVerifyRequest request) {
         try {
-            mfaService.verifySetup(request.getUserId(), request.getCode());
+            mfaService.verifySetup(request.getUserId(), request.getCode(), request.getSecret());
             return ResponseEntity.ok(Map.of("message", "MFA enabled successfully"));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/mfa/setup/reset")
+    public ResponseEntity<?> resetMfaSetup(@RequestBody MfaSetupInitRequest request) {
+        try {
+            mfaService.resetSetup(request.getUserId());
+            return ResponseEntity.ok(Map.of("message", "MFA setup reset. You can start again."));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

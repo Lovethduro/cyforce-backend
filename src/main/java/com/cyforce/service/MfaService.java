@@ -3,16 +3,16 @@ package com.cyforce.service;
 import com.cyforce.dto.MfaSetupInitResponse;
 import com.cyforce.model.User;
 import com.cyforce.repository.UserRepository;
-import dev.samstevens.totp.code.*;
-import dev.samstevens.totp.qr.QrData;
-import dev.samstevens.totp.secret.DefaultSecretGenerator;
-import dev.samstevens.totp.secret.SecretGenerator;
-import dev.samstevens.totp.time.SystemTimeProvider;
-import dev.samstevens.totp.time.TimeProvider;
+import com.warrenstrange.googleauth.GoogleAuthenticator;
+import com.warrenstrange.googleauth.GoogleAuthenticatorConfig;
+import com.warrenstrange.googleauth.GoogleAuthenticatorKey;
+import com.warrenstrange.googleauth.GoogleAuthenticatorQRGenerator;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.util.Locale;
 import java.util.Random;
+import java.util.concurrent.TimeUnit;
 
 @Service
 public class MfaService {
@@ -20,15 +20,28 @@ public class MfaService {
     private final UserRepository userRepository;
     private final EmailService emailService;
     private final SmsService smsService;
-    private final SecretGenerator secretGenerator = new DefaultSecretGenerator();
-    private final TimeProvider timeProvider = new SystemTimeProvider();
-    private final CodeGenerator codeGenerator = new DefaultCodeGenerator();
-    private final CodeVerifier codeVerifier = new DefaultCodeVerifier(codeGenerator, timeProvider);
+    private final GoogleAuthenticator googleAuthenticator;
 
     public MfaService(UserRepository userRepository, EmailService emailService, SmsService smsService) {
         this.userRepository = userRepository;
         this.emailService = emailService;
         this.smsService = smsService;
+        GoogleAuthenticatorConfig config = new GoogleAuthenticatorConfig.GoogleAuthenticatorConfigBuilder()
+                .setTimeStepSizeInMillis(TimeUnit.SECONDS.toMillis(30))
+                .setWindowSize(10)
+                .setCodeDigits(6)
+                .build();
+        this.googleAuthenticator = new GoogleAuthenticator(config);
+    }
+
+    public void resetSetup(String userId) {
+        User user = getVerifiedUser(userId);
+        clearPendingMfa(user);
+        user.setTotpSecret(null);
+        user.setMfaEnabled(false);
+        user.setMfaMethod(null);
+        user.setUpdatedAt(LocalDateTime.now());
+        userRepository.save(user);
     }
 
     public MfaSetupInitResponse initSetup(String userId, String method) {
@@ -46,20 +59,28 @@ public class MfaService {
         };
     }
 
-    public void verifySetup(String userId, String code) {
-        User user = getVerifiedUser(userId);
+    public void verifySetup(String userId, String code, String clientSecret) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        if (!user.isEmailVerified()) {
+            throw new RuntimeException("Please verify your email before setting up MFA");
+        }
 
         if (user.getMfaPendingMethod() == null) {
             throw new RuntimeException("MFA setup has not been started. Please begin setup again.");
         }
 
         boolean valid = switch (user.getMfaPendingMethod()) {
-            case "authenticator" -> verifyAuthenticatorCode(user.getMfaPendingSecret(), code);
+            case "authenticator" -> verifyAuthenticatorSetup(user, code, clientSecret);
             case "email", "sms" -> verifyEmailCode(user, code);
             default -> throw new RuntimeException("Unsupported MFA method");
         };
 
         if (!valid) {
+            if ("authenticator".equals(user.getMfaPendingMethod())) {
+                throw new RuntimeException("Invalid verification code. Use the latest code from your authenticator app, or restart setup and scan the QR code again.");
+            }
             throw new RuntimeException("Invalid verification code");
         }
 
@@ -75,8 +96,34 @@ public class MfaService {
         userRepository.save(user);
     }
 
+    private boolean verifyAuthenticatorSetup(User user, String code, String clientSecret) {
+        String secret = resolveAuthenticatorSecret(user, clientSecret);
+        if (secret == null || secret.isBlank()) {
+            return false;
+        }
+
+        secret = normalizeSecret(secret);
+        if (!secret.equals(normalizeSecret(user.getMfaPendingSecret()))) {
+            user.setMfaPendingSecret(secret);
+            user.setMfaPendingMethod("authenticator");
+            userRepository.save(user);
+        }
+
+        return verifyAuthenticatorCode(secret, code);
+    }
+
+    private String resolveAuthenticatorSecret(User user, String clientSecret) {
+        if (clientSecret != null && !clientSecret.isBlank()) {
+            return clientSecret;
+        }
+        return user.getMfaPendingSecret();
+    }
+
     private MfaSetupInitResponse initAuthenticatorSetup(User user) {
-        String secret = secretGenerator.generate();
+        GoogleAuthenticatorKey credentials = googleAuthenticator.createCredentials();
+        String secret = credentials.getKey();
+
+        user.setTotpSecret(null);
         user.setMfaPendingSecret(secret);
         user.setMfaPendingMethod("authenticator");
         user.setMfaPendingCode(null);
@@ -84,7 +131,10 @@ public class MfaService {
         user.setUpdatedAt(LocalDateTime.now());
         userRepository.save(user);
 
-        String otpAuthUrl = buildOtpAuthUrl(user.getEmail(), secret);
+        String accountName = user.getEmail() == null || user.getEmail().isBlank()
+                ? "user"
+                : user.getEmail().trim().toLowerCase();
+        String otpAuthUrl = GoogleAuthenticatorQRGenerator.getOtpAuthURL("CyForce", accountName, credentials);
 
         return new MfaSetupInitResponse(
                 "authenticator",
@@ -142,10 +192,25 @@ public class MfaService {
     }
 
     private boolean verifyAuthenticatorCode(String secret, String code) {
-        if (secret == null || code == null || code.length() != 6) {
+        if (secret == null || code == null) {
             return false;
         }
-        return codeVerifier.isValidCode(secret, code);
+
+        String normalizedCode = code.replaceAll("\\D", "");
+        if (normalizedCode.length() != 6) {
+            return false;
+        }
+
+        try {
+            int codeValue = Integer.parseInt(normalizedCode);
+            return googleAuthenticator.authorize(normalizeSecret(secret), codeValue);
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    private String normalizeSecret(String secret) {
+        return secret.replaceAll("\\s+", "").toUpperCase(Locale.ROOT);
     }
 
     private boolean verifyEmailCode(User user, String code) {
@@ -155,7 +220,8 @@ public class MfaService {
         if (user.getMfaPendingCodeExpiry().isBefore(LocalDateTime.now())) {
             throw new RuntimeException("Verification code has expired. Please request a new one.");
         }
-        return user.getMfaPendingCode().equals(code);
+        String normalizedCode = code == null ? "" : code.replaceAll("\\D", "");
+        return user.getMfaPendingCode().equals(normalizedCode);
     }
 
     private User getVerifiedUser(String userId) {
@@ -167,19 +233,6 @@ public class MfaService {
         }
 
         return user;
-    }
-
-    private String buildOtpAuthUrl(String email, String secret) {
-        QrData data = new QrData.Builder()
-                .label(email)
-                .secret(secret)
-                .issuer("CyForce")
-                .algorithm(HashingAlgorithm.SHA1)
-                .digits(6)
-                .period(30)
-                .build();
-
-        return data.getUri();
     }
 
     private String maskPhone(String phone) {
