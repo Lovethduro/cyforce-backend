@@ -19,7 +19,10 @@ public class ConversationMessage {
     private String authorId;
     private String authorName;
     private String authorRole;
+    private String authorAvatarUrl;
     private String message;
+    private String messageType = "text";
+    private String invoiceId;
     private String attachmentUrl;
     private LocalDateTime createdAt;
 }

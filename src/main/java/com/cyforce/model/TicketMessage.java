@@ -18,6 +18,7 @@ public class TicketMessage {
     private String ticketId;
     private String authorId;
     private String authorName;
+    private String authorAvatarUrl;
     private String message;
     private boolean internalNote;
     private LocalDateTime createdAt;

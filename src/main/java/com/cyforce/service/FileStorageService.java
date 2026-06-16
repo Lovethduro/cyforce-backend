@@ -23,6 +23,10 @@ public class FileStorageService {
         return storeImage(file, "products", true);
     }
 
+    public String storeHotDealImage(MultipartFile file) {
+        return storeImage(file, "hot-deals", true);
+    }
+
     public String storeAvatar(MultipartFile file) {
         return storeImage(file, "avatars", false);
     }

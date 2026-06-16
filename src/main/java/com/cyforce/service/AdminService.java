@@ -37,6 +37,7 @@ public class AdminService {
     private final NotificationService notificationService;
     private final SystemMetricsService systemMetricsService;
     private final AuditLogRepository auditLogRepository;
+    private final EmailService emailService;
 
     private static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
     private static final List<String> SECURITY_ACTIONS = List.of(
@@ -53,7 +54,8 @@ public class AdminService {
                         NotificationRepository notificationRepository,
                         NotificationService notificationService,
                         SystemMetricsService systemMetricsService,
-                        AuditLogRepository auditLogRepository) {
+                        AuditLogRepository auditLogRepository,
+                        EmailService emailService) {
         this.userRepository = userRepository;
         this.ticketRepository = ticketRepository;
         this.leadRepository = leadRepository;
@@ -65,6 +67,7 @@ public class AdminService {
         this.notificationService = notificationService;
         this.systemMetricsService = systemMetricsService;
         this.auditLogRepository = auditLogRepository;
+        this.emailService = emailService;
     }
 
     public DashboardStatsResponse dashboardStats(String userId) {
@@ -84,15 +87,26 @@ public class AdminService {
             throw new RuntimeException("Email already registered");
         }
 
+        String fullName = body.get("fullName");
+        if (fullName == null || fullName.isBlank()) {
+            throw new RuntimeException("Full name is required");
+        }
+
+        String tempPassword = body.get("password");
+        if (tempPassword == null || tempPassword.isBlank()) {
+            tempPassword = passwordService.generateTemporaryPassword();
+        }
+
         User user = new User();
-        user.setFullName(body.get("fullName"));
+        user.setFullName(fullName.trim());
         user.setEmail(email);
         user.setPhone(body.getOrDefault("phone", ""));
         user.setCompanyName(body.get("companyName"));
         user.setCustomerType(body.getOrDefault("customerType", "individual"));
         user.setRole(mapRole(body.get("role")));
         user.setAuthProvider("LOCAL");
-        user.setPassword(passwordService.encode(body.get("password")));
+        user.setPassword(passwordService.encode(tempPassword));
+        user.setMustChangePassword(true);
         user.setEmailVerified(true);
         user.setEmailVerifiedAt(LocalDateTime.now());
         user.setActive(true);
@@ -100,6 +114,11 @@ public class AdminService {
         user.setUpdatedAt(LocalDateTime.now());
         User saved = userRepository.save(user);
         auditLogService.log(admin, "USER_CREATE", "User Management", saved.getEmail());
+        try {
+            emailService.sendWelcomeCredentialsEmail(saved.getEmail(), saved.getFullName(), tempPassword);
+        } catch (Exception e) {
+            System.err.println("Failed to send welcome credentials email: " + e.getMessage());
+        }
         return saved;
     }
 
@@ -120,6 +139,7 @@ public class AdminService {
         }
         if (body.get("password") != null && !body.get("password").isBlank()) {
             user.setPassword(passwordService.encode(body.get("password")));
+            user.setMustChangePassword(true);
         }
         user.setUpdatedAt(LocalDateTime.now());
         User saved = userRepository.save(user);

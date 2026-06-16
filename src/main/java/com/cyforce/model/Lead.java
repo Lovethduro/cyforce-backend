@@ -24,6 +24,19 @@ public class Lead {
     private int score;
     private String ownerId;
     private String ownerName;
+    private String conversationId;
+    private String quoteType;
+    private String details;
+    private String productId;
+    private String productName;
+    private Integer quantity;
+    private String deliveryAddress;
+    private String installationAddress;
+    private String preferredInstallationDate;
+    private String siteContactName;
+    private String siteContactPhone;
+    private String productType;
+    private String existingProductDetails;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

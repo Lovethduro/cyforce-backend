@@ -56,6 +56,13 @@ public class User {
 
     private LocalDateTime lastLoginAt;
 
+    private LocalDateTime lastActivityAt;
+
+    private LocalDateTime lastReengagementEmailAt;
+
+    /** Null or true = show motivational banners; false = opted out */
+    private Boolean showMotivationalMessages;
+
     private LocalDateTime emailVerifiedAt;
 
     private boolean mfaEnabled = false;
@@ -71,4 +78,26 @@ public class User {
     private String mfaPendingCode;
 
     private LocalDateTime mfaPendingCodeExpiry;
+
+    private boolean mustChangePassword = false;
+
+    private String passwordResetToken;
+
+    private LocalDateTime passwordResetTokenExpiry;
+
+    private String mfaLoginToken;
+
+    private LocalDateTime mfaLoginTokenExpiry;
+
+    private String mfaLoginCode;
+
+    private LocalDateTime mfaLoginCodeExpiry;
+
+    private double averageRating;
+
+    private int ratingCount;
+
+    public boolean wantsMotivationalMessages() {
+        return showMotivationalMessages == null || showMotivationalMessages;
+    }
 }

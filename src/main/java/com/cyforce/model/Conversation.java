@@ -18,10 +18,25 @@ public class Conversation {
     private String customerId;
     private String customerName;
     private String customerEmail;
+    private String leadId;
+    private String guestAccessToken;
+    private LocalDateTime guestTokenExpiresAt;
     private String salesAgentId;
     private String salesAgentName;
+    private String salesAgentAvatarUrl;
     private String subject;
     private String status;
+    private String ticketId;
+    private String supervisorId;
+    private String supervisorName;
+    private String linkedInvoiceId;
+    private Long agreedAmountKobo;
+    private LocalDateTime forwardedAt;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+    private LocalDateTime closedAt;
+    private String closeReason;
+    private Integer customerRating;
+    private String ratingComment;
+    private LocalDateTime ratedAt;
 }

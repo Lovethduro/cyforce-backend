@@ -126,7 +126,9 @@ public class UserService {
     }
 
     public UserProfileResponse getProfile(String userId) {
-        return toProfileResponse(requireUser(userId));
+        User user = requireUser(userId);
+        touchActivity(user);
+        return toProfileResponse(user);
     }
 
     public UserProfileResponse updateProfile(String userId, UpdateProfileRequest request) {
@@ -149,6 +151,9 @@ public class UserService {
             if ("paystack".equals(method) || "flutterwave".equals(method)) {
                 user.setPreferredPaymentMethod(method);
             }
+        }
+        if (request.getShowMotivationalMessages() != null) {
+            user.setShowMotivationalMessages(request.getShowMotivationalMessages());
         }
 
         user.setUpdatedAt(LocalDateTime.now());
@@ -242,6 +247,17 @@ public class UserService {
                 .orElseThrow(() -> new RuntimeException("User not found"));
     }
 
+    public void touchActivity(String userId) {
+        User user = requireUser(userId);
+        touchActivity(user);
+    }
+
+    private void touchActivity(User user) {
+        user.setLastActivityAt(LocalDateTime.now());
+        user.setUpdatedAt(LocalDateTime.now());
+        userRepository.save(user);
+    }
+
     private void requireStaff(User user) {
         String role = user.getRole() == null ? "" : user.getRole().toUpperCase();
         if (!role.equals("ADMIN") && !role.equals("SUPERVISOR")) {
@@ -273,7 +289,11 @@ public class UserService {
                 user.isEmailVerified(),
                 user.isMfaEnabled(),
                 user.getMfaMethod(),
-                user.isActive()
+                user.isActive(),
+                user.isMustChangePassword(),
+                user.wantsMotivationalMessages(),
+                user.getAverageRating(),
+                user.getRatingCount()
         );
     }
 

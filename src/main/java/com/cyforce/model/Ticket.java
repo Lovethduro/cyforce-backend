@@ -26,6 +26,10 @@ public class Ticket {
     private String status;
     private String assigneeId;
     private String assigneeName;
+    private String assigneeAvatarUrl;
+    private String salesConversationId;
+    private boolean transferredToSales = false;
+    private LocalDateTime transferredAt;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

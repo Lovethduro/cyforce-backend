@@ -24,4 +24,8 @@ public class UserProfileResponse {
     private boolean mfaEnabled;
     private String mfaMethod;
     private boolean active;
+    private boolean mustChangePassword;
+    private boolean showMotivationalMessages = true;
+    private double averageRating;
+    private int ratingCount;
 }

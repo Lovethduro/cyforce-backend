@@ -5,6 +5,7 @@ import com.cyforce.model.Invoice;
 import com.cyforce.model.PaymentTransaction;
 import com.cyforce.model.Product;
 import com.cyforce.model.User;
+import com.cyforce.repository.ConversationRepository;
 import com.cyforce.repository.InvoiceRepository;
 import com.cyforce.repository.PaymentTransactionRepository;
 import com.cyforce.repository.ProductRepository;
@@ -26,26 +27,32 @@ public class PaymentService {
     private final PaymentProperties properties;
     private final PaymentTransactionRepository transactionRepository;
     private final InvoiceRepository invoiceRepository;
+    private final ConversationRepository conversationRepository;
     private final ProductRepository productRepository;
     private final UserRepository userRepository;
     private final NotificationService notificationService;
     private final RequestUserService requestUserService;
+    private final EmailService emailService;
     private final RestClient restClient;
 
     public PaymentService(PaymentProperties properties,
                           PaymentTransactionRepository transactionRepository,
                           InvoiceRepository invoiceRepository,
+                          ConversationRepository conversationRepository,
                           ProductRepository productRepository,
                           UserRepository userRepository,
                           NotificationService notificationService,
-                          RequestUserService requestUserService) {
+                          RequestUserService requestUserService,
+                          EmailService emailService) {
         this.properties = properties;
         this.transactionRepository = transactionRepository;
         this.invoiceRepository = invoiceRepository;
+        this.conversationRepository = conversationRepository;
         this.productRepository = productRepository;
         this.userRepository = userRepository;
         this.notificationService = notificationService;
         this.requestUserService = requestUserService;
+        this.emailService = emailService;
         this.restClient = RestClient.create();
     }
 
@@ -74,13 +81,34 @@ public class PaymentService {
             if (!product.isActive() || !product.isInStock()) {
                 throw new RuntimeException("Product unavailable: " + product.getName());
             }
-            long lineKobo = product.getPrice() * 100L * quantity;
+            if (product.getStockQuantity() > 0 && quantity > product.getStockQuantity()) {
+                throw new RuntimeException("Only " + product.getStockQuantity() + " units left for " + product.getName());
+            }
+            long unitPrice = resolveUnitPrice(item, product);
+            long lineKobo = unitPrice * 100L * quantity;
             totalKobo += lineKobo;
             description.append(product.getName()).append(" x").append(quantity).append(", ");
         }
 
         if (totalKobo <= 0) {
             throw new RuntimeException("Invalid cart total");
+        }
+
+        for (Map<String, Object> item : items) {
+            String productId = stringVal(item.get("productId"), null);
+            int quantity = parseQuantity(item.get("quantity"));
+            productRepository.findById(productId).ifPresent(product -> {
+                if (product.getStockQuantity() > 0) {
+                    int remaining = product.getStockQuantity() - quantity;
+                    product.setStockQuantity(Math.max(0, remaining));
+                    if (remaining <= 0) {
+                        product.setInStock(false);
+                        notifyOutOfStock(product);
+                    }
+                    product.setUpdatedAt(LocalDateTime.now());
+                    productRepository.save(product);
+                }
+            });
         }
 
         Invoice invoice = new Invoice();
@@ -119,6 +147,25 @@ public class PaymentService {
         int qty = value instanceof Number n ? n.intValue() : Integer.parseInt(value.toString());
         if (qty < 1) throw new RuntimeException("Invalid quantity");
         return qty;
+    }
+
+    private long resolveUnitPrice(Map<String, Object> item, Product product) {
+        Object raw = item.get("unitPrice");
+        if (raw == null) {
+            return product.getPrice();
+        }
+        long unitPrice = raw instanceof Number number ? number.longValue() : Long.parseLong(raw.toString());
+        if (unitPrice <= 0) {
+            throw new RuntimeException("Invalid price for " + product.getName());
+        }
+        long catalogPrice = product.getPrice();
+        long maxAllowed = product.getOriginalPrice() != null && product.getOriginalPrice() > catalogPrice
+                ? product.getOriginalPrice()
+                : catalogPrice;
+        if (unitPrice > maxAllowed) {
+            throw new RuntimeException("Invalid discounted price for " + product.getName());
+        }
+        return unitPrice;
     }
 
     public Map<String, Object> initializePaystack(String userId, Map<String, Object> body) {
@@ -420,7 +467,61 @@ public class PaymentService {
                 inv.setStatus("paid");
                 inv.setPaidAt(LocalDateTime.now());
                 inv.setPaymentTransactionId(saved.getId());
+                if (inv.getSurveyToken() == null || inv.getSurveyToken().isBlank()) {
+                    inv.setSurveyToken(UUID.randomUUID().toString().replace("-", ""));
+                }
                 invoiceRepository.save(inv);
+
+                String amountText = inv.getAmount() > 0
+                        ? "₦" + String.format("%,d", inv.getAmount() / 100)
+                        : "";
+                String surveyUrl = "http://localhost:3000/survey/purchase/" + inv.getSurveyToken();
+
+                if (tx.getUserId() != null) {
+                    userRepository.findById(tx.getUserId()).ifPresent(user -> {
+                        if (user.getEmail() != null && !user.getEmail().isBlank()) {
+                            try {
+                                emailService.sendPurchaseConfirmationEmail(
+                                        user.getEmail(),
+                                        user.getFullName(),
+                                        amountText.isBlank() ? "your order" : amountText,
+                                        inv.getDescription(),
+                                        surveyUrl
+                                );
+                            } catch (RuntimeException e) {
+                                log.warn("Purchase confirmation email failed: {}", e.getMessage());
+                            }
+                        }
+                    });
+                }
+
+                if (tx.getUserId() != null) {
+                    notificationService.create(tx.getUserId(), "Purchase confirmed",
+                            "Payment successful" + (amountText.isBlank() ? "" : " — " + amountText)
+                                    + ". Please rate your experience: " + surveyUrl,
+                            "success");
+                }
+
+                if (inv.getConversationId() != null) {
+                    conversationRepository.findById(inv.getConversationId()).ifPresent(conv -> {
+                        if (conv.getCustomerRating() == null || conv.getCustomerRating() <= 0) {
+                            conv.setStatus("pending_rating");
+                            conv.setClosedAt(LocalDateTime.now());
+                            conv.setCloseReason("purchase_completed");
+                        } else {
+                            conv.setStatus("closed");
+                        }
+                        conv.setUpdatedAt(LocalDateTime.now());
+                        conversationRepository.save(conv);
+                    });
+                }
+
+                if (inv.getSalesAgentId() != null) {
+                    notificationService.create(inv.getSalesAgentId(), "Deal closed",
+                            (inv.getCustomerName() != null ? inv.getCustomerName() : "Customer")
+                                    + " paid your invoice" + (amountText.isBlank() ? "" : " of " + amountText) + ".",
+                            "success");
+                }
             });
         }
 
@@ -436,8 +537,10 @@ public class PaymentService {
             String amount = tx.getAmount() > 0
                     ? "₦" + String.format("%,d", tx.getAmount() / 100)
                     : "";
-            notificationService.create(tx.getUserId(), "Payment successful",
-                    "Your payment" + (amount.isBlank() ? "" : " of " + amount) + " was completed successfully.", "success");
+            if (invoiceId == null || invoiceId.isBlank()) {
+                notificationService.create(tx.getUserId(), "Payment successful",
+                        "Your payment" + (amount.isBlank() ? "" : " of " + amount) + " was completed successfully.", "success");
+            }
         }
 
         return saved;
@@ -454,6 +557,16 @@ public class PaymentService {
         if (tx.getUserId() == null) return;
         notificationService.create(tx.getUserId(), "Payment failed",
                 "Your payment could not be completed. Please try again or use a different method.", "error");
+    }
+
+    private void notifyOutOfStock(com.cyforce.model.Product product) {
+        String message = product.getName() + " is now out of stock.";
+        userRepository.findAll().stream()
+                .filter(u -> {
+                    String role = u.getRole() == null ? "" : u.getRole().toUpperCase();
+                    return u.isActive() && ("ADMIN".equals(role) || "SALES_AGENT".equals(role) || "SUPERVISOR".equals(role));
+                })
+                .forEach(u -> notificationService.create(u.getId(), "Product out of stock", message, "warning"));
     }
 
     private boolean hasPaystackKey() {

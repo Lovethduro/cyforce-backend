@@ -22,6 +22,7 @@ public class Product {
     private String description;
     private String imageUrl;
     private boolean inStock = true;
+    private int stockQuantity = 0;
     private boolean featured = false;
     private boolean active = true;
     private String createdBy;

@@ -160,6 +160,74 @@ public class AuthController {
         }
     }
 
+    @PostMapping("/mfa/login/verify")
+    public ResponseEntity<?> verifyMfaLogin(@RequestBody Map<String, String> request) {
+        try {
+            AuthResponse response = authService.verifyMfaLogin(
+                    request.get("challengeToken"),
+                    request.get("code")
+            );
+            return ResponseEntity.ok(response);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/mfa/login/resend")
+    public ResponseEntity<?> resendMfaLogin(@RequestBody Map<String, String> request) {
+        try {
+            authService.resendMfaLoginCode(request.get("challengeToken"));
+            return ResponseEntity.ok(Map.of("message", "A new verification code has been sent."));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/forgot-password")
+    public ResponseEntity<?> forgotPassword(@RequestBody Map<String, String> request) {
+        String email = request.get("email");
+        if (email == null || email.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Email is required"));
+        }
+        return ResponseEntity.ok(authService.forgotPassword(email));
+    }
+
+    @PostMapping("/reset-password")
+    public ResponseEntity<?> resetPassword(@RequestBody Map<String, String> request) {
+        try {
+            String token = request.get("token");
+            String password = request.get("password");
+            if (password == null || password.isBlank()) {
+                password = request.get("newPassword");
+            }
+            if (token == null || token.isBlank()) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Reset token is required"));
+            }
+            if (password == null || password.isBlank()) {
+                return ResponseEntity.badRequest().body(Map.of("error", "New password is required"));
+            }
+            authService.resetPassword(token, password);
+            return ResponseEntity.ok(Map.of("message", "Password updated successfully. You can sign in now."));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/change-password")
+    public ResponseEntity<?> changePassword(
+            @RequestHeader(value = "X-User-Id", required = false) String userId,
+            @RequestBody Map<String, String> request) {
+        if (userId == null || userId.isBlank()) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Not authenticated"));
+        }
+        try {
+            authService.changePassword(userId, request.get("currentPassword"), request.get("newPassword"));
+            return ResponseEntity.ok(Map.of("message", "Password changed successfully"));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
     @GetMapping("/test-email")
     public ResponseEntity<?> testEmail(@RequestParam String to) {
         try {

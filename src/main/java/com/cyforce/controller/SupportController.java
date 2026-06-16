@@ -92,4 +92,15 @@ public class SupportController {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
     }
+
+    @PostMapping("/tickets/{id}/transfer-to-sales")
+    public ResponseEntity<?> transferToSales(@RequestHeader("X-User-Id") String userId,
+                                             @PathVariable String id,
+                                             @RequestBody Map<String, String> body) {
+        try {
+            return ResponseEntity.ok(ticketService.transferToSales(userId, id, body.get("note")));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
 }

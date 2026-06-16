@@ -2,6 +2,7 @@ package com.cyforce.controller;
 
 import com.cyforce.service.MessagingService;
 import com.cyforce.service.PaymentService;
+import com.cyforce.service.RatingService;
 import com.cyforce.service.TicketService;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -19,13 +20,16 @@ public class CustomerController {
     private final TicketService ticketService;
     private final PaymentService paymentService;
     private final MessagingService messagingService;
+    private final RatingService ratingService;
 
     public CustomerController(TicketService ticketService,
                               PaymentService paymentService,
-                              MessagingService messagingService) {
+                              MessagingService messagingService,
+                              RatingService ratingService) {
         this.ticketService = ticketService;
         this.paymentService = paymentService;
         this.messagingService = messagingService;
+        this.ratingService = ratingService;
     }
 
     @GetMapping("/dashboard/stats")
@@ -123,6 +127,32 @@ public class CustomerController {
                                          @RequestBody Map<String, String> body) {
         try {
             return ResponseEntity.ok(messagingService.sendMessage(userId, id, body.get("message"), null));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/conversations/{id}/rating")
+    public ResponseEntity<?> rateConversation(@RequestHeader("X-User-Id") String userId,
+                                              @PathVariable String id,
+                                              @RequestBody Map<String, Object> body) {
+        try {
+            int rating = body.get("rating") instanceof Number n ? n.intValue() : Integer.parseInt(body.get("rating").toString());
+            String comment = body.get("comment") != null ? body.get("comment").toString() : "";
+            return ResponseEntity.ok(ratingService.rateConversation(userId, id, rating, comment));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/tickets/{id}/rating")
+    public ResponseEntity<?> rateTicket(@RequestHeader("X-User-Id") String userId,
+                                        @PathVariable String id,
+                                        @RequestBody Map<String, Object> body) {
+        try {
+            int rating = body.get("rating") instanceof Number n ? n.intValue() : Integer.parseInt(body.get("rating").toString());
+            String comment = body.get("comment") != null ? body.get("comment").toString() : "";
+            return ResponseEntity.ok(ratingService.rateTicket(userId, id, rating, comment));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

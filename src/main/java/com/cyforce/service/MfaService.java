@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.util.Locale;
 import java.util.Random;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 @Service
@@ -96,6 +97,113 @@ public class MfaService {
         userRepository.save(user);
     }
 
+    public String beginLoginChallenge(User user) {
+        if (!user.isMfaEnabled()) {
+            throw new RuntimeException("MFA is not enabled for this account");
+        }
+
+        String token = UUID.randomUUID().toString();
+        user.setMfaLoginToken(token);
+        user.setMfaLoginTokenExpiry(LocalDateTime.now().plusMinutes(10));
+        user.setUpdatedAt(LocalDateTime.now());
+
+        String method = user.getMfaMethod() == null ? "authenticator" : user.getMfaMethod();
+        if ("email".equals(method) || "sms".equals(method)) {
+            String code = String.format("%06d", new Random().nextInt(1_000_000));
+            user.setMfaLoginCode(code);
+            user.setMfaLoginCodeExpiry(LocalDateTime.now().plusMinutes(10));
+            if ("sms".equals(method)) {
+                smsService.sendMfaCode(user.getPhone(), code);
+            } else {
+                emailService.sendMfaSetupCode(user.getEmail(), code);
+            }
+        } else {
+            user.setMfaLoginCode(null);
+            user.setMfaLoginCodeExpiry(null);
+        }
+
+        userRepository.save(user);
+        return token;
+    }
+
+    public User verifyLoginChallenge(String challengeToken, String code) {
+        if (challengeToken == null || challengeToken.isBlank()) {
+            throw new RuntimeException("MFA challenge token is required");
+        }
+
+        User user = userRepository.findAll().stream()
+                .filter(u -> challengeToken.equals(u.getMfaLoginToken()))
+                .findFirst()
+                .orElseThrow(() -> new RuntimeException("Invalid or expired MFA session. Please sign in again."));
+
+        if (user.getMfaLoginTokenExpiry() == null || user.getMfaLoginTokenExpiry().isBefore(LocalDateTime.now())) {
+            clearLoginChallenge(user);
+            userRepository.save(user);
+            throw new RuntimeException("MFA session expired. Please sign in again.");
+        }
+
+        String method = user.getMfaMethod() == null ? "authenticator" : user.getMfaMethod();
+        boolean valid = switch (method) {
+            case "authenticator" -> verifyAuthenticatorCode(user.getTotpSecret(), code);
+            case "email", "sms" -> verifyLoginCode(user, code);
+            default -> false;
+        };
+
+        if (!valid) {
+            throw new RuntimeException("Invalid verification code");
+        }
+
+        clearLoginChallenge(user);
+        user.setUpdatedAt(LocalDateTime.now());
+        return userRepository.save(user);
+    }
+
+    public void resendLoginChallenge(String challengeToken) {
+        User user = userRepository.findAll().stream()
+                .filter(u -> challengeToken.equals(u.getMfaLoginToken()))
+                .findFirst()
+                .orElseThrow(() -> new RuntimeException("Invalid MFA session"));
+
+        if (user.getMfaLoginTokenExpiry() == null || user.getMfaLoginTokenExpiry().isBefore(LocalDateTime.now())) {
+            throw new RuntimeException("MFA session expired. Please sign in again.");
+        }
+
+        String method = user.getMfaMethod();
+        if (!"email".equals(method) && !"sms".equals(method)) {
+            throw new RuntimeException("Resend is only available for email or SMS MFA");
+        }
+
+        String code = String.format("%06d", new Random().nextInt(1_000_000));
+        user.setMfaLoginCode(code);
+        user.setMfaLoginCodeExpiry(LocalDateTime.now().plusMinutes(10));
+        user.setUpdatedAt(LocalDateTime.now());
+        userRepository.save(user);
+
+        if ("sms".equals(method)) {
+            smsService.sendMfaCode(user.getPhone(), code);
+        } else {
+            emailService.sendMfaSetupCode(user.getEmail(), code);
+        }
+    }
+
+    private boolean verifyLoginCode(User user, String code) {
+        if (user.getMfaLoginCode() == null || user.getMfaLoginCodeExpiry() == null) {
+            return false;
+        }
+        if (user.getMfaLoginCodeExpiry().isBefore(LocalDateTime.now())) {
+            throw new RuntimeException("Verification code has expired. Please sign in again.");
+        }
+        String normalizedCode = code == null ? "" : code.replaceAll("\\D", "");
+        return user.getMfaLoginCode().equals(normalizedCode);
+    }
+
+    private void clearLoginChallenge(User user) {
+        user.setMfaLoginToken(null);
+        user.setMfaLoginTokenExpiry(null);
+        user.setMfaLoginCode(null);
+        user.setMfaLoginCodeExpiry(null);
+    }
+
     private boolean verifyAuthenticatorSetup(User user, String code, String clientSecret) {
         String secret = resolveAuthenticatorSecret(user, clientSecret);
         if (secret == null || secret.isBlank()) {
@@ -140,7 +248,7 @@ public class MfaService {
                 "authenticator",
                 secret,
                 otpAuthUrl,
-                "Scan the QR code with your authenticator app"
+                "Scan with iPhone/iPad, or enter the setup key manually in Google Authenticator (laptop QR codes often fail)"
         );
     }
 

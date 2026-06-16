@@ -17,6 +17,9 @@ public class Invoice {
     private String id;
     private String customerId;
     private String customerName;
+    private String salesAgentId;
+    private String salesAgentName;
+    private String conversationId;
     private long amount;
     private String currency;
     private String status;
@@ -25,4 +28,6 @@ public class Invoice {
     private String paymentTransactionId;
     private LocalDateTime paidAt;
     private LocalDateTime createdAt;
+    private String surveyToken;
+    private boolean surveyCompleted;
 }

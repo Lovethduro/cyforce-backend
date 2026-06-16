@@ -9,4 +9,5 @@ public class UpdateProfileRequest {
     private String companyName;
     private String customerType;
     private String preferredPaymentMethod;
+    private Boolean showMotivationalMessages;
 }

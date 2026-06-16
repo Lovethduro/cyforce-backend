@@ -1,5 +1,6 @@
 package com.cyforce.service;
 
+import com.cyforce.model.Conversation;
 import com.cyforce.model.Ticket;
 import com.cyforce.model.TicketMessage;
 import com.cyforce.model.User;
@@ -23,6 +24,7 @@ public class TicketService {
     private final NotificationService notificationService;
     private final AuditLogService auditLogService;
     private final FileStorageService fileStorageService;
+    private final MessagingService messagingService;
 
     public TicketService(TicketRepository ticketRepository,
                          TicketMessageRepository messageRepository,
@@ -30,7 +32,8 @@ public class TicketService {
                          RequestUserService requestUserService,
                          NotificationService notificationService,
                          AuditLogService auditLogService,
-                         FileStorageService fileStorageService) {
+                         FileStorageService fileStorageService,
+                         MessagingService messagingService) {
         this.ticketRepository = ticketRepository;
         this.messageRepository = messageRepository;
         this.userRepository = userRepository;
@@ -38,6 +41,7 @@ public class TicketService {
         this.notificationService = notificationService;
         this.auditLogService = auditLogService;
         this.fileStorageService = fileStorageService;
+        this.messagingService = messagingService;
     }
 
     public List<Ticket> customerTickets(String userId) {
@@ -138,6 +142,7 @@ public class TicketService {
                 .orElseThrow(() -> new RuntimeException("Ticket not found"));
         ticket.setAssigneeId(user.getId());
         ticket.setAssigneeName(user.getFullName());
+        ticket.setAssigneeAvatarUrl(resolveAvatar(user));
         ticket.setStatus("in_progress");
         ticket.setUpdatedAt(LocalDateTime.now());
         return ticketRepository.save(ticket);
@@ -176,11 +181,56 @@ public class TicketService {
         return saveMessage(user, ticket, message, internalNote);
     }
 
+    public Map<String, Object> transferToSales(String userId, String ticketId, String note) {
+        User agent = requestUserService.requireUser(userId);
+        requestUserService.requireRole(agent, "SUPPORT_AGENT", "ADMIN", "SUPERVISOR");
+
+        Ticket ticket = ticketRepository.findById(ticketId)
+                .orElseThrow(() -> new RuntimeException("Ticket not found"));
+
+        if (ticket.isTransferredToSales() && ticket.getSalesConversationId() != null) {
+            throw new RuntimeException("This ticket has already been transferred to sales");
+        }
+
+        User customer = userRepository.findById(ticket.getCustomerId())
+                .orElseThrow(() -> new RuntimeException("Customer not found"));
+
+        String subject = "Sales follow-up: " + ticket.getSubject();
+        String body = (note != null && !note.isBlank() ? note.trim() + "\n\n" : "")
+                + "Transferred from support ticket.\n"
+                + (ticket.getDescription() != null ? ticket.getDescription() : "");
+
+        Conversation conversation = messagingService.startConversationForCustomer(
+                customer, subject, body, ticket.getId());
+
+        ticket.setTransferredToSales(true);
+        ticket.setSalesConversationId(conversation.getId());
+        ticket.setTransferredAt(LocalDateTime.now());
+        ticket.setStatus("transferred_to_sales");
+        ticket.setUpdatedAt(LocalDateTime.now());
+        ticketRepository.save(ticket);
+
+        saveMessage(agent, ticket, "Transferred to sales team for purchase follow-up."
+                + (note != null && !note.isBlank() ? " Note: " + note.trim() : ""), true);
+
+        notificationService.create(customer.getId(), "Transferred to sales",
+                "Your request was forwarded to our sales team.", "info");
+
+        auditLogService.log(agent, "TICKET_TRANSFER_SALES", "Ticketing", ticket.getSubject());
+
+        return Map.of(
+                "ticket", ticket,
+                "conversationId", conversation.getId(),
+                "message", "Ticket transferred to sales queue"
+        );
+    }
+
     private TicketMessage saveMessage(User user, Ticket ticket, String message, boolean internalNote) {
         TicketMessage entry = new TicketMessage();
         entry.setTicketId(ticket.getId());
         entry.setAuthorId(user.getId());
         entry.setAuthorName(user.getFullName());
+        entry.setAuthorAvatarUrl(resolveAvatar(user));
         entry.setMessage(message);
         entry.setInternalNote(internalNote);
         entry.setCreatedAt(LocalDateTime.now());
@@ -219,5 +269,15 @@ public class TicketService {
 
     private boolean isCustomer(User user) {
         return "CUSTOMER".equalsIgnoreCase(user.getRole());
+    }
+
+    private String resolveAvatar(User user) {
+        if (user.getAvatarUrl() != null && !user.getAvatarUrl().isBlank()) {
+            return user.getAvatarUrl();
+        }
+        if (user.getLogoUrl() != null && !user.getLogoUrl().isBlank()) {
+            return user.getLogoUrl();
+        }
+        return null;
     }
 }

@@ -17,4 +17,9 @@ public class AuthResponse {
     private String avatarUrl;
     private String preferredPaymentMethod;
     private String createdAt;
+    private boolean mustChangePassword;
+    private boolean showMotivationalMessages = true;
+    private boolean mfaRequired;
+    private String mfaChallengeToken;
+    private String mfaMethod;
 }

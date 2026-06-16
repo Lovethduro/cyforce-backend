@@ -33,6 +33,52 @@ public class EmailService {
         sendEmail(to, subject, htmlContent);
     }
 
+    public void sendWelcomeCredentialsEmail(String to, String fullName, String temporaryPassword) {
+        try {
+            String subject = "Your CyForce Account Has Been Created";
+            String loginUrl = "http://localhost:3000/login";
+            String htmlContent = String.format("""
+                <!DOCTYPE html>
+                <html>
+                <head><meta charset="UTF-8"></head>
+                <body>
+                    <h2>Welcome to CyForce, %s!</h2>
+                    <p>An administrator created an account for you. Sign in with the credentials below, then you will be asked to set a new password.</p>
+                    <p><strong>Email:</strong> %s</p>
+                    <p><strong>Temporary password:</strong> <code>%s</code></p>
+                    <p><a href="%s">Sign in to CyForce</a></p>
+                    <p>For security, change this password immediately after your first login.</p>
+                </body>
+                </html>
+                """, fullName == null || fullName.isBlank() ? "there" : fullName, to, temporaryPassword, loginUrl);
+            sendEmail(to, subject, htmlContent);
+        } catch (MessagingException e) {
+            throw new RuntimeException("Failed to send welcome email: " + e.getMessage(), e);
+        }
+    }
+
+    public void sendPasswordResetEmail(String to, String token) {
+        try {
+            String subject = "Reset Your CyForce Password";
+            String resetUrl = "http://localhost:3000/reset-password?token=" + token;
+            String htmlContent = String.format("""
+                <!DOCTYPE html>
+                <html>
+                <head><meta charset="UTF-8"></head>
+                <body>
+                    <h2>Password Reset Request</h2>
+                    <p>We received a request to reset your CyForce password. Click the link below to choose a new password:</p>
+                    <p><a href="%s">Reset Password</a></p>
+                    <p>This link expires in 1 hour. If you did not request this, you can ignore this email.</p>
+                </body>
+                </html>
+                """, resetUrl);
+            sendEmail(to, subject, htmlContent);
+        } catch (MessagingException e) {
+            throw new RuntimeException("Failed to send password reset email: " + e.getMessage(), e);
+        }
+    }
+
     public void sendMfaSetupCode(String to, String code) {
         try {
             String subject = "Your CyForce MFA Setup Code";
@@ -65,5 +111,163 @@ public class EmailService {
 
         mailSender.send(message);
         System.out.println("✅ Email sent to: " + to);
+    }
+
+    public void sendCustomerReengagementEmail(String to, String fullName) {
+        try {
+            String subject = "We miss you at CyForce";
+            String loginUrl = "http://localhost:3000/login";
+            String productsUrl = "http://localhost:3000/products";
+            String name = fullName == null || fullName.isBlank() ? "there" : fullName.split(" ")[0];
+            String htmlContent = String.format("""
+                <!DOCTYPE html>
+                <html>
+                <head><meta charset="UTF-8"></head>
+                <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #111;">
+                    <h2>Hi %s, we haven't seen you in a while</h2>
+                    <p>It's been over a week since your last visit to CyForce Technologies. We'd love to have you back.</p>
+                    <p>Check out our latest security, solar, and enterprise solutions — or message our sales team if you need help choosing the right package.</p>
+                    <p>
+                        <a href="%s" style="display:inline-block;padding:12px 20px;background:#2B5CE6;color:#fff;text-decoration:none;border-radius:8px;font-weight:bold;">Sign in to your account</a>
+                    </p>
+                    <p><a href="%s">Browse products</a></p>
+                    <p style="font-size:12px;color:#666;">If you're all set, you can ignore this email. We won't send another for at least a week.</p>
+                </body>
+                </html>
+                """, name, loginUrl, productsUrl);
+            sendEmail(to, subject, htmlContent);
+        } catch (MessagingException e) {
+            throw new RuntimeException("Failed to send re-engagement email: " + e.getMessage(), e);
+        }
+    }
+
+    public void sendPurchaseConfirmationEmail(String to, String fullName, String amountText,
+                                              String description, String surveyUrl) {
+        try {
+            String subject = "Your CyForce Purchase Confirmation";
+            String name = fullName == null || fullName.isBlank() ? "there" : fullName.split(" ")[0];
+            String details = description == null || description.isBlank() ? "your order" : description;
+            String htmlContent = String.format("""
+                <!DOCTYPE html>
+                <html>
+                <head><meta charset="UTF-8"></head>
+                <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #111;">
+                    <h2>Thank you for your purchase, %s!</h2>
+                    <p>We've received your payment of <strong>%s</strong> for %s.</p>
+                    <p>Your order is being processed. We'd love to hear how your experience was — please take a moment to rate the whole process:</p>
+                    <p>
+                        <a href="%s" style="display:inline-block;padding:12px 20px;background:#2B5CE6;color:#fff;text-decoration:none;border-radius:8px;font-weight:bold;">Rate your experience</a>
+                    </p>
+                    <p style="font-size:12px;color:#666;">This short survey helps us improve and recognize our team.</p>
+                </body>
+                </html>
+                """, name, amountText, details, surveyUrl);
+            sendEmail(to, subject, htmlContent);
+        } catch (MessagingException e) {
+            throw new RuntimeException("Failed to send purchase confirmation email: " + e.getMessage(), e);
+        }
+    }
+
+    public void sendQuoteConfirmationEmail(String to, String fullName, String agentName,
+                                           String quoteSummary, String portalUrl) {
+        try {
+            String subject = "Your CyForce Quote Request";
+            String name = firstName(fullName);
+            String agent = agentName == null || agentName.isBlank() ? "our sales team" : agentName;
+            String summary = quoteSummary == null || quoteSummary.isBlank() ? "your request" : quoteSummary;
+            String htmlContent = String.format("""
+                <!DOCTYPE html>
+                <html>
+                <head><meta charset="UTF-8"></head>
+                <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #111;">
+                    <h2>Hi %s, we received your quote request</h2>
+                    <p><strong>%s</strong> has been assigned to help you with %s.</p>
+                    <p>You can view your request and reply to your sales agent online — no phone call required unless you prefer one.</p>
+                    <p>
+                        <a href="%s" style="display:inline-block;padding:12px 20px;background:#2B5CE6;color:#fff;text-decoration:none;border-radius:8px;font-weight:bold;">View quote &amp; message your agent</a>
+                    </p>
+                    <p style="font-size:12px;color:#666;">Save this link to return to your conversation anytime. It is valid for 90 days.</p>
+                </body>
+                </html>
+                """, name, agent, summary, portalUrl);
+            sendEmail(to, subject, htmlContent);
+        } catch (MessagingException e) {
+            throw new RuntimeException("Failed to send quote confirmation email: " + e.getMessage(), e);
+        }
+    }
+
+    public void sendQuoteAgentReplyEmail(String to, String fullName, String agentName,
+                                         String messagePreview, String portalUrl) {
+        try {
+            String subject = agentName + " replied to your CyForce quote";
+            String name = firstName(fullName);
+            String preview = messagePreview == null ? "" : messagePreview;
+            if (preview.length() > 280) {
+                preview = preview.substring(0, 277) + "...";
+            }
+            String htmlContent = String.format("""
+                <!DOCTYPE html>
+                <html>
+                <head><meta charset="UTF-8"></head>
+                <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #111;">
+                    <h2>Hi %s, %s sent you a message</h2>
+                    <p style="background:#f5f7fb;padding:14px;border-radius:8px;color:#333;">%s</p>
+                    <p>
+                        <a href="%s" style="display:inline-block;padding:12px 20px;background:#2B5CE6;color:#fff;text-decoration:none;border-radius:8px;font-weight:bold;">Reply in your quote portal</a>
+                    </p>
+                    <p style="font-size:12px;color:#666;">You can reply online without creating an account.</p>
+                </body>
+                </html>
+                """, name, agentName, escapeHtml(preview), portalUrl);
+            sendEmail(to, subject, htmlContent);
+        } catch (MessagingException e) {
+            throw new RuntimeException("Failed to send quote reply email: " + e.getMessage(), e);
+        }
+    }
+
+    public void sendLeadOutreachEmail(String to, String fullName, String agentName,
+                                      String subject, String body, String portalUrl) {
+        try {
+            String name = firstName(fullName);
+            String agent = agentName == null || agentName.isBlank() ? "CyForce Sales" : agentName;
+            String emailSubject = subject == null || subject.isBlank()
+                    ? "Message from " + agent + " at CyForce"
+                    : subject.trim();
+            String messageBody = body == null ? "" : body.trim().replace("\n", "<br/>");
+            String portalBlock = portalUrl == null || portalUrl.isBlank() ? "" : String.format("""
+                    <p>
+                        <a href="%s" style="display:inline-block;padding:12px 20px;background:#2B5CE6;color:#fff;text-decoration:none;border-radius:8px;font-weight:bold;">Open your quote conversation</a>
+                    </p>
+                    """, portalUrl);
+            String htmlContent = String.format("""
+                <!DOCTYPE html>
+                <html>
+                <head><meta charset="UTF-8"></head>
+                <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #111;">
+                    <h2>Hi %s,</h2>
+                    <p>%s</p>
+                    %s
+                    <p style="font-size:12px;color:#666;">— %s, CyForce Technologies</p>
+                </body>
+                </html>
+                """, name, messageBody, portalBlock, agent);
+            sendEmail(to, emailSubject, htmlContent);
+        } catch (MessagingException e) {
+            throw new RuntimeException("Failed to send lead email: " + e.getMessage(), e);
+        }
+    }
+
+    private String firstName(String fullName) {
+        if (fullName == null || fullName.isBlank()) {
+            return "there";
+        }
+        return fullName.split(" ")[0];
+    }
+
+    private String escapeHtml(String text) {
+        return text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;");
     }
 }

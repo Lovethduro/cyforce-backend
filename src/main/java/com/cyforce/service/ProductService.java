@@ -105,6 +105,11 @@ public class ProductService {
         if (fields.get("inStock") != null) {
             product.setInStock(Boolean.parseBoolean(fields.get("inStock")));
         }
+        if (fields.get("stockQuantity") != null && !fields.get("stockQuantity").isBlank()) {
+            int quantity = Integer.parseInt(fields.get("stockQuantity").trim());
+            product.setStockQuantity(Math.max(0, quantity));
+            product.setInStock(product.getStockQuantity() > 0);
+        }
         if (fields.get("featured") != null) {
             product.setFeatured(Boolean.parseBoolean(fields.get("featured")));
         }
