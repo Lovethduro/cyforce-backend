@@ -3,6 +3,7 @@ package com.cyforce.config;
 import com.cyforce.model.*;
 import com.cyforce.repository.*;
 import com.cyforce.service.NotificationService;
+import com.cyforce.service.SystemConfigService;
 import com.cyforce.model.Product;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,6 +33,7 @@ public class DataSeeder implements ApplicationRunner {
     private final InvoiceRepository invoiceRepository;
     private final HotDealRepository hotDealRepository;
     private final ProductRepository productRepository;
+    private final SystemConfigService systemConfigService;
 
     public DataSeeder(TicketRepository ticketRepository,
                       TicketMessageRepository messageRepository,
@@ -44,7 +46,8 @@ public class DataSeeder implements ApplicationRunner {
                       AgentPresenceRepository presenceRepository,
                       InvoiceRepository invoiceRepository,
                       HotDealRepository hotDealRepository,
-                      ProductRepository productRepository) {
+                      ProductRepository productRepository,
+                      SystemConfigService systemConfigService) {
         this.ticketRepository = ticketRepository;
         this.messageRepository = messageRepository;
         this.leadRepository = leadRepository;
@@ -57,10 +60,12 @@ public class DataSeeder implements ApplicationRunner {
         this.invoiceRepository = invoiceRepository;
         this.hotDealRepository = hotDealRepository;
         this.productRepository = productRepository;
+        this.systemConfigService = systemConfigService;
     }
 
     @Override
     public void run(ApplicationArguments args) {
+        systemConfigService.seedDefaultsIfMissing();
         if (ticketRepository.count() > 0) {
             seedSupplementaryData();
             return;

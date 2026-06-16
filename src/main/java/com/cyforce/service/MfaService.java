@@ -21,12 +21,17 @@ public class MfaService {
     private final UserRepository userRepository;
     private final EmailService emailService;
     private final SmsService smsService;
+    private final PasswordService passwordService;
     private final GoogleAuthenticator googleAuthenticator;
 
-    public MfaService(UserRepository userRepository, EmailService emailService, SmsService smsService) {
+    public MfaService(UserRepository userRepository,
+                      EmailService emailService,
+                      SmsService smsService,
+                      PasswordService passwordService) {
         this.userRepository = userRepository;
         this.emailService = emailService;
         this.smsService = smsService;
+        this.passwordService = passwordService;
         GoogleAuthenticatorConfig config = new GoogleAuthenticatorConfig.GoogleAuthenticatorConfigBuilder()
                 .setTimeStepSizeInMillis(TimeUnit.SECONDS.toMillis(30))
                 .setWindowSize(10)
@@ -41,6 +46,27 @@ public class MfaService {
         user.setTotpSecret(null);
         user.setMfaEnabled(false);
         user.setMfaMethod(null);
+        user.setUpdatedAt(LocalDateTime.now());
+        userRepository.save(user);
+    }
+
+    public void disableMfa(String userId, String password) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+        if (!user.isMfaEnabled()) {
+            throw new RuntimeException("MFA is not enabled for this account");
+        }
+        if (password == null || password.isBlank()) {
+            throw new RuntimeException("Password is required to disable MFA");
+        }
+        if (!passwordService.matchesRaw(password, user.getPassword())) {
+            throw new RuntimeException("Incorrect password");
+        }
+        user.setMfaEnabled(false);
+        user.setMfaMethod(null);
+        user.setTotpSecret(null);
+        clearPendingMfa(user);
+        clearLoginChallenge(user);
         user.setUpdatedAt(LocalDateTime.now());
         userRepository.save(user);
     }

@@ -50,11 +50,14 @@ public class SupportDashboardOverviewResponse {
         private String subject;
         private String priority;
         private String status;
+        private String customerName;
         private String customerEmail;
+        private String openedAt;
         private String lastUpdate;
         private int slaPercent;
         private String slaRemaining;
         private boolean slaBreached;
+        private boolean slaEscalated;
     }
 
     @Data
@@ -64,6 +67,8 @@ public class SupportDashboardOverviewResponse {
         private int target;
         private int achieved;
         private int percent;
+        private String estimatedCompletion;
+        private String statusMessage;
     }
 
     @Data
@@ -75,6 +80,8 @@ public class SupportDashboardOverviewResponse {
         private int rating;
         private String comment;
         private String createdAt;
+        private String ticketId;
+        private String ticketNumber;
     }
 
     @Data
@@ -84,6 +91,7 @@ public class SupportDashboardOverviewResponse {
         private String id;
         private String title;
         private String category;
+        private int views;
     }
 
     @Data

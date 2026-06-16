@@ -30,6 +30,13 @@ public class Ticket {
     private String salesConversationId;
     private boolean transferredToSales = false;
     private LocalDateTime transferredAt;
+    // Used for automatic SLA escalation notifications to avoid duplicate alerts.
+    private boolean slaEscalated = false;
+    private LocalDateTime slaEscalatedAt;
+    private String guestAccessToken;
+    private LocalDateTime guestTokenExpiresAt;
+    private String mergedIntoTicketId;
+    private LocalDateTime mergedAt;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

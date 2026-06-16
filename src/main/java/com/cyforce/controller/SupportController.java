@@ -59,9 +59,59 @@ public class SupportController {
         return ResponseEntity.ok(ticketService.supportTickets(userId));
     }
 
+    @GetMapping("/macros")
+    public ResponseEntity<?> macros(@RequestHeader("X-User-Id") String userId) {
+        try {
+            return ResponseEntity.ok(ticketService.supportMacros(userId));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
     @GetMapping("/tickets/all")
     public ResponseEntity<?> allOpen(@RequestHeader("X-User-Id") String userId) {
         return ResponseEntity.ok(ticketService.allOpenTickets(userId));
+    }
+
+    @GetMapping("/tickets/{id}")
+    public ResponseEntity<?> ticketDetail(@RequestHeader("X-User-Id") String userId, @PathVariable String id) {
+        try {
+            return ResponseEntity.ok(Map.of(
+                    "ticket", ticketService.getTicket(userId, id),
+                    "messages", ticketService.getMessages(userId, id)
+            ));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/tickets/{id}/timeline")
+    public ResponseEntity<?> ticketTimeline(@RequestHeader("X-User-Id") String userId, @PathVariable String id) {
+        try {
+            return ResponseEntity.ok(ticketService.ticketTimeline(userId, id));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage() != null ? e.getMessage() : "Request failed"));
+        }
+    }
+
+    @GetMapping("/tickets/{id}/duplicates")
+    public ResponseEntity<?> duplicates(@RequestHeader("X-User-Id") String userId, @PathVariable String id) {
+        try {
+            return ResponseEntity.ok(ticketService.findDuplicateTickets(userId, id));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/tickets/{id}/merge")
+    public ResponseEntity<?> merge(@RequestHeader("X-User-Id") String userId,
+                                   @PathVariable String id,
+                                   @RequestBody Map<String, String> body) {
+        try {
+            return ResponseEntity.ok(ticketService.mergeTickets(userId, id, body.get("duplicateTicketId")));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
     }
 
     @PutMapping("/tickets/{id}/assign")
@@ -99,6 +149,27 @@ public class SupportController {
                                              @RequestBody Map<String, String> body) {
         try {
             return ResponseEntity.ok(ticketService.transferToSales(userId, id, body.get("note")));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/agents")
+    public ResponseEntity<?> agents(@RequestHeader("X-User-Id") String userId) {
+        try {
+            return ResponseEntity.ok(ticketService.listSupportAgents(userId));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/tickets/{id}/transfer-to-agent")
+    public ResponseEntity<?> transferToAgent(@RequestHeader("X-User-Id") String userId,
+                                             @PathVariable String id,
+                                             @RequestBody Map<String, String> body) {
+        try {
+            return ResponseEntity.ok(ticketService.transferToAgent(
+                    userId, id, body.get("agentId"), body.get("note")));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

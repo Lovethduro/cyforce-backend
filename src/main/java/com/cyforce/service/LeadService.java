@@ -251,7 +251,7 @@ public class LeadService {
             messagingService.appendAgentEmailToConversation(user, conversation, subject, body);
         }
 
-        if ("new".equalsIgnoreCase(lead.getStatus())) {
+        if ("SALES_AGENT".equalsIgnoreCase(user.getRole()) && "new".equalsIgnoreCase(lead.getStatus())) {
             lead.setStatus("contacted");
             lead.setUpdatedAt(LocalDateTime.now());
             leadRepository.save(lead);
@@ -283,13 +283,19 @@ public class LeadService {
 
     public Lead updateLead(String userId, String leadId, Map<String, Object> body) {
         User user = requestUserService.requireUser(userId);
+        requestUserService.requireRole(user, "SALES_AGENT", "ADMIN", "SUPERVISOR");
         Lead lead = leadRepository.findById(leadId).orElseThrow(() -> new RuntimeException("Lead not found"));
         if ("SALES_AGENT".equalsIgnoreCase(user.getRole())
                 && lead.getOwnerId() != null
                 && !user.getId().equals(lead.getOwnerId())) {
             throw new RuntimeException("Lead not found");
         }
-        if (body.get("status") != null) lead.setStatus((String) body.get("status"));
+        if (body.get("status") != null) {
+            if (!"SALES_AGENT".equalsIgnoreCase(user.getRole())) {
+                throw new RuntimeException("Only sales agents can change lead status");
+            }
+            lead.setStatus((String) body.get("status"));
+        }
         if (body.get("name") != null) lead.setName((String) body.get("name"));
         if (body.get("email") != null) lead.setEmail((String) body.get("email"));
         if (body.get("phone") != null) lead.setPhone((String) body.get("phone"));

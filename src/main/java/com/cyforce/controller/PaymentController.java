@@ -67,13 +67,18 @@ public class PaymentController {
         return ResponseEntity.ok(Map.of("received", true));
     }
 
-    @PostMapping("/sandbox/complete/{reference}")
-    public ResponseEntity<?> sandboxComplete(@PathVariable String reference) {
+    @PostMapping("/complete-local/{reference}")
+    public ResponseEntity<?> completeLocal(@PathVariable String reference) {
         try {
             return ResponseEntity.ok(paymentService.completePayment(reference));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
+    }
+
+    @PostMapping("/sandbox/complete/{reference}")
+    public ResponseEntity<?> sandboxComplete(@PathVariable String reference) {
+        return completeLocal(reference);
     }
 
     @GetMapping("/transactions")

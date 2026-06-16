@@ -38,7 +38,14 @@ public class SecurityConfig {
                                 "/api/content/**",
                                 "/api/feedback/**",
                                 "/api/quotes/**",
+                                "/api/knowledge-base/**",
+                                "/api/public/**",
                                 "/uploads/**",
+                                "/api/analytics/**",
+                                "/api/team-chat/**",
+                                "/api/calendar/**",
+                                "/api/leave/**",
+                                "/api/referrals/**",
                                 "/api/test/**"
                         ).permitAll()
                         .anyRequest().authenticated()

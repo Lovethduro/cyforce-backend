@@ -58,7 +58,9 @@ public class PaymentService {
 
     public Map<String, Object> checkoutCart(String userId, Map<String, Object> body) {
         User user = requestUserService.requireUser(userId);
-        requestUserService.requireRole(user, "CUSTOMER");
+        if (!isCustomer(user) && !isStaff(user)) {
+            throw new RuntimeException("Checkout is not available for this account");
+        }
 
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> items = (List<Map<String, Object>>) body.get("items");
@@ -92,6 +94,13 @@ public class PaymentService {
 
         if (totalKobo <= 0) {
             throw new RuntimeException("Invalid cart total");
+        }
+
+        long originalTotalKobo = totalKobo;
+        StaffDiscount discount = staffDiscountFor(user);
+        if (discount.percent() > 0) {
+            totalKobo = Math.max(0, totalKobo - discount.amountKobo(originalTotalKobo));
+            description.append(" (staff discount ").append(discount.percent()).append("%)");
         }
 
         for (Map<String, Object> item : items) {
@@ -135,11 +144,49 @@ public class PaymentService {
         result.put("invoiceId", savedInvoice.getId());
         result.put("totalKobo", totalKobo);
         result.put("totalNaira", totalKobo / 100);
+        result.put("originalTotalKobo", originalTotalKobo);
+        result.put("staffDiscountPercent", discount.percent());
+        result.put("staffDiscountKobo", Math.max(0, originalTotalKobo - totalKobo));
 
         notificationService.create(user.getId(), "Checkout started",
                 "Your order of ₦" + String.format("%,d", totalKobo / 100) + " is being processed.", "info");
 
         return result;
+    }
+
+    private record StaffDiscount(int percent, String label) {
+        long amountKobo(long totalKobo) {
+            return Math.round(totalKobo * (percent / 100.0));
+        }
+    }
+
+    private boolean isCustomer(User user) {
+        return user != null && "CUSTOMER".equalsIgnoreCase(user.getRole());
+    }
+
+    private boolean isStaff(User user) {
+        if (user == null || user.getRole() == null) {
+            return false;
+        }
+        String role = user.getRole().toUpperCase();
+        return "ADMIN".equals(role) || "SUPERVISOR".equals(role)
+                || "SALES_AGENT".equals(role) || "SUPPORT_AGENT".equals(role);
+    }
+
+    private StaffDiscount staffDiscountFor(User user) {
+        if (!isStaff(user) || user.getCreatedAt() == null) {
+            return new StaffDiscount(0, null);
+        }
+        long months = java.time.temporal.ChronoUnit.MONTHS.between(
+                user.getCreatedAt().toLocalDate(),
+                java.time.LocalDate.now());
+        if (months >= 12) {
+            return new StaffDiscount(15, "1+ year staff discount");
+        }
+        if (months >= 6) {
+            return new StaffDiscount(10, "6+ month staff discount");
+        }
+        return new StaffDiscount(0, null);
     }
 
     private int parseQuantity(Object value) {
@@ -191,7 +238,7 @@ public class PaymentService {
         String callbackUrl = properties.getCallbackBaseUrl() + "/payment/callback?provider=paystack&reference=" + reference;
 
         if (!hasPaystackKey()) {
-            tx.setAuthorizationUrl(callbackUrl + "&sandbox=1");
+            tx.setAuthorizationUrl(callbackUrl + "&autoComplete=1");
             transactionRepository.save(tx);
             return Map.of(
                     "provider", "paystack",
@@ -199,8 +246,8 @@ public class PaymentService {
                     "authorizationUrl", tx.getAuthorizationUrl(),
                     "publicKey", properties.getPaystack().getPublicKey(),
                     "amount", amount,
-                    "sandbox", true,
-                    "message", "Configure payment.paystack.secret-key for live sandbox initialization"
+                    "autoComplete", true,
+                    "message", "Payment will be completed on return"
             );
         }
 
@@ -262,7 +309,7 @@ public class PaymentService {
         String redirectUrl = properties.getCallbackBaseUrl() + "/payment/callback?provider=flutterwave&reference=" + reference;
 
         if (!hasFlutterwaveKey()) {
-            tx.setAuthorizationUrl(redirectUrl + "&sandbox=1");
+            tx.setAuthorizationUrl(redirectUrl + "&autoComplete=1");
             transactionRepository.save(tx);
             return Map.of(
                     "provider", "flutterwave",
@@ -270,8 +317,8 @@ public class PaymentService {
                     "authorizationUrl", tx.getAuthorizationUrl(),
                     "publicKey", properties.getFlutterwave().getPublicKey(),
                     "amount", amount,
-                    "sandbox", true,
-                    "message", "Configure payment.flutterwave.secret-key for live sandbox initialization"
+                    "autoComplete", true,
+                    "message", "Payment will be completed on return"
             );
         }
 
@@ -327,7 +374,7 @@ public class PaymentService {
         }
 
         if (!hasPaystackKey()) {
-            return markSuccess(tx, reference, "sandbox-verify");
+            return markSuccess(tx, reference, "local-verify");
         }
 
         try {
@@ -362,7 +409,7 @@ public class PaymentService {
         }
 
         if (!hasFlutterwaveKey()) {
-            return markSuccess(tx, reference, "sandbox-verify");
+            return markSuccess(tx, reference, "local-verify");
         }
 
         try {
@@ -441,18 +488,30 @@ public class PaymentService {
     }
 
     public Map<String, Object> billingOverview(String userId) {
-        List<Invoice> invoices = userInvoices(userId);
+        User user = requestUserService.requireUser(userId);
+        boolean isCustomer = "CUSTOMER".equalsIgnoreCase(user.getRole());
+        boolean isStaff = List.of("ADMIN", "SUPERVISOR", "SALES_AGENT", "SUPPORT_AGENT")
+                .contains(user.getRole() != null ? user.getRole().toUpperCase() : "");
+        if (!isCustomer && !isStaff) {
+            throw new RuntimeException("Billing is not available for this account");
+        }
+        List<Invoice> invoices = isCustomer ? userInvoices(userId) : List.of();
         List<PaymentTransaction> txs = userTransactions(userId);
         long pending = invoices.stream().filter(i -> "pending".equals(i.getStatus()) || "unpaid".equals(i.getStatus())).count();
         long paid = invoices.stream().filter(i -> "paid".equals(i.getStatus())).count();
         long revenue = invoices.stream().filter(i -> "paid".equals(i.getStatus())).mapToLong(Invoice::getAmount).sum();
-        return Map.of(
-                "monthlyRevenue", revenue,
-                "activePlans", paid,
-                "pendingInvoices", pending,
-                "invoices", invoices,
-                "transactions", txs
-        );
+        if (isStaff) {
+            paid = txs.stream().filter(t -> "success".equalsIgnoreCase(t.getStatus())).count();
+            revenue = txs.stream().filter(t -> "success".equalsIgnoreCase(t.getStatus())).mapToLong(PaymentTransaction::getAmount).sum();
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("monthlyRevenue", revenue);
+        result.put("activePlans", paid);
+        result.put("pendingInvoices", pending);
+        result.put("invoices", invoices);
+        result.put("transactions", txs);
+        result.put("staffPurchases", isStaff);
+        return result;
     }
 
     private PaymentTransaction markSuccess(PaymentTransaction tx, String reference, String providerRef) {

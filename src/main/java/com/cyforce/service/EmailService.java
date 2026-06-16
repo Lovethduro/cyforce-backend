@@ -270,4 +270,58 @@ public class EmailService {
                 .replace(">", "&gt;")
                 .replace("\"", "&quot;");
     }
+
+    public void sendGuestTicketConfirmationEmail(String to, String fullName, String subject, String portalUrl) {
+        try {
+            String name = firstName(fullName);
+            String ticketSubject = subject == null || subject.isBlank() ? "your support request" : subject;
+            String htmlContent = String.format("""
+                <!DOCTYPE html>
+                <html>
+                <head><meta charset="UTF-8"></head>
+                <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #111;">
+                    <h2>Hi %s, we received your support request</h2>
+                    <p>Your ticket <strong>%s</strong> has been submitted to the CyForce support team.</p>
+                    <p>Track your ticket and reply to our team online — no account required.</p>
+                    <p>
+                        <a href="%s" style="display:inline-block;padding:12px 20px;background:#2B5CE6;color:#fff;text-decoration:none;border-radius:8px;font-weight:bold;">View your support ticket</a>
+                    </p>
+                    <p style="font-size:12px;color:#666;">Save this link to return anytime. It is valid for 90 days.</p>
+                </body>
+                </html>
+                """, name, escapeHtml(ticketSubject), portalUrl);
+            sendEmail(to, "Your CyForce Support Ticket", htmlContent);
+        } catch (MessagingException e) {
+            throw new RuntimeException("Failed to send guest ticket confirmation email: " + e.getMessage(), e);
+        }
+    }
+
+    public void sendGuestTicketAgentReplyEmail(String to, String fullName, String agentName,
+                                               String messagePreview, String portalUrl) {
+        try {
+            String name = firstName(fullName);
+            String agent = agentName == null || agentName.isBlank() ? "CyForce Support" : agentName;
+            String preview = messagePreview == null ? "" : messagePreview;
+            if (preview.length() > 280) {
+                preview = preview.substring(0, 277) + "...";
+            }
+            String htmlContent = String.format("""
+                <!DOCTYPE html>
+                <html>
+                <head><meta charset="UTF-8"></head>
+                <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #111;">
+                    <h2>Hi %s, %s replied to your ticket</h2>
+                    <p style="background:#f5f7fb;padding:14px;border-radius:8px;color:#333;">%s</p>
+                    <p>
+                        <a href="%s" style="display:inline-block;padding:12px 20px;background:#2B5CE6;color:#fff;text-decoration:none;border-radius:8px;font-weight:bold;">Reply in your support portal</a>
+                    </p>
+                    <p style="font-size:12px;color:#666;">You can reply online without creating an account.</p>
+                </body>
+                </html>
+                """, name, agent, escapeHtml(preview), portalUrl);
+            sendEmail(to, agent + " replied to your CyForce support ticket", htmlContent);
+        } catch (MessagingException e) {
+            throw new RuntimeException("Failed to send guest ticket reply email: " + e.getMessage(), e);
+        }
+    }
 }

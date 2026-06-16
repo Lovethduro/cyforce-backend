@@ -8,6 +8,7 @@ import org.springframework.stereotype.Service;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -23,6 +24,7 @@ public class SupportDashboardService {
     private final UserRepository userRepository;
     private final TicketMetricsService metricsService;
     private final AuditLogRepository auditLogRepository;
+    private final TicketService ticketService;
 
     public SupportDashboardService(RequestUserService requestUserService,
                                    TicketRepository ticketRepository,
@@ -32,7 +34,8 @@ public class SupportDashboardService {
                                    AgentPresenceRepository presenceRepository,
                                    UserRepository userRepository,
                                    TicketMetricsService metricsService,
-                                   AuditLogRepository auditLogRepository) {
+                                   AuditLogRepository auditLogRepository,
+                                   TicketService ticketService) {
         this.requestUserService = requestUserService;
         this.ticketRepository = ticketRepository;
         this.messageRepository = messageRepository;
@@ -42,6 +45,7 @@ public class SupportDashboardService {
         this.userRepository = userRepository;
         this.metricsService = metricsService;
         this.auditLogRepository = auditLogRepository;
+        this.ticketService = ticketService;
     }
 
     public SupportDashboardOverviewResponse overview(String userId) {
@@ -50,6 +54,12 @@ public class SupportDashboardService {
 
         List<Ticket> myTickets = ticketRepository.findByAssigneeIdOrderByCreatedAtDesc(agent.getId());
         List<Ticket> openMine = myTickets.stream()
+                .filter(t -> "open".equals(t.getStatus()) || "in_progress".equals(t.getStatus()))
+                .toList();
+
+        ticketService.processSlaEscalations();
+        myTickets = ticketRepository.findByAssigneeIdOrderByCreatedAtDesc(agent.getId());
+        openMine = myTickets.stream()
                 .filter(t -> "open".equals(t.getStatus()) || "in_progress".equals(t.getStatus()))
                 .toList();
 
@@ -66,13 +76,14 @@ public class SupportDashboardService {
         AgentPresence presence = ensurePresence(agent);
 
         List<Ticket> priorityPool = openMine.stream()
-                .sorted(Comparator.comparingInt((Ticket t) -> priorityWeight(t.getPriority())).reversed()
+                .sorted(Comparator.comparingInt((Ticket t) -> effectivePriorityWeight(t)).reversed()
                         .thenComparing(Ticket::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder())))
                 .limit(5)
                 .toList();
 
         int dailyTarget = 8;
         int achieved = (int) resolvedToday;
+        int percent = dailyTarget > 0 ? Math.min(100, (int) Math.round((achieved * 100.0) / dailyTarget)) : 0;
 
         return new SupportDashboardOverviewResponse(
                 new SupportDashboardOverviewResponse.StatsItem(
@@ -85,8 +96,13 @@ public class SupportDashboardService {
                 toAgentStatus(presence),
                 priorityPool.stream().map(this::toTicketItem).toList(),
                 openMine.stream().limit(10).map(this::toTicketItem).toList(),
-                new SupportDashboardOverviewResponse.PerformanceItem(dailyTarget, achieved,
-                        dailyTarget > 0 ? Math.min(100, (int) Math.round((achieved * 100.0) / dailyTarget)) : 0),
+                new SupportDashboardOverviewResponse.PerformanceItem(
+                        dailyTarget,
+                        achieved,
+                        percent,
+                        estimateCompletion(achieved, dailyTarget),
+                        performanceStatusMessage(achieved, dailyTarget)
+                ),
                 buildFeedback(myFeedback),
                 buildArticles(),
                 buildTeamAvailability(),
@@ -137,11 +153,14 @@ public class SupportDashboardService {
                 t.getSubject(),
                 t.getPriority(),
                 t.getStatus(),
+                t.getCustomerName(),
                 t.getCustomerEmail(),
+                metricsService.formatRelative(t.getCreatedAt()),
                 metricsService.formatRelative(t.getUpdatedAt() != null ? t.getUpdatedAt() : t.getCreatedAt()),
                 metricsService.slaProgressPercent(t),
                 metricsService.slaRemainingLabel(t),
-                metricsService.isSlaBreached(t)
+                metricsService.isSlaBreached(t),
+                t.isSlaEscalated()
         );
     }
 
@@ -152,6 +171,11 @@ public class SupportDashboardService {
             case "medium" -> 2;
             default -> 1;
         };
+    }
+
+    private int effectivePriorityWeight(Ticket ticket) {
+        int base = priorityWeight(ticket.getPriority());
+        return base + (metricsService.isSlaBreached(ticket) ? 10 : 0);
     }
 
     private double computeTeamSatisfaction() {
@@ -166,14 +190,25 @@ public class SupportDashboardService {
                 f.getCompanyName(),
                 f.getRating(),
                 f.getComment(),
-                metricsService.formatIso(f.getCreatedAt())
+                metricsService.formatIso(f.getCreatedAt()),
+                f.getTicketId(),
+                ticketNumberForId(f.getTicketId())
         )).toList();
+    }
+
+    private String ticketNumberForId(String ticketId) {
+        if (ticketId == null || ticketId.isBlank()) {
+            return null;
+        }
+        return ticketRepository.findById(ticketId)
+                .map(metricsService::ticketNumber)
+                .orElse(null);
     }
 
     private List<SupportDashboardOverviewResponse.ArticleItem> buildArticles() {
         return articleRepository.findByPublishedTrueOrderByViewsDesc().stream()
                 .limit(5)
-                .map(a -> new SupportDashboardOverviewResponse.ArticleItem(a.getId(), a.getTitle(), a.getCategory()))
+                .map(a -> new SupportDashboardOverviewResponse.ArticleItem(a.getId(), a.getTitle(), a.getCategory(), a.getViews()))
                 .toList();
     }
 
@@ -218,5 +253,27 @@ public class SupportDashboardService {
             case "on_break", "break" -> "on_break";
             default -> "available";
         };
+    }
+
+    private String performanceStatusMessage(int achieved, int target) {
+        if (target <= 0) {
+            return "No target set";
+        }
+        if (achieved >= target) {
+            return "Target reached!";
+        }
+        if (achieved >= Math.max(1, (int) Math.ceil(target * 0.6))) {
+            return "You're on track!";
+        }
+        return "More tickets to close today";
+    }
+
+    private String estimateCompletion(int achieved, int target) {
+        if (achieved >= target) {
+            return "Done for today";
+        }
+        int remaining = Math.max(target - achieved, 1);
+        LocalDateTime estimate = LocalDateTime.now().plusMinutes(remaining * 45L);
+        return estimate.format(DateTimeFormatter.ofPattern("h:mm a"));
     }
 }

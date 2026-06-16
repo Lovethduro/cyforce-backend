@@ -3,13 +3,16 @@ package com.cyforce.controller;
 import com.cyforce.service.MessagingService;
 import com.cyforce.service.PaymentService;
 import com.cyforce.service.RatingService;
+import com.cyforce.service.SupportResponseEstimateService;
 import com.cyforce.service.TicketService;
+import com.cyforce.model.Ticket;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 @RestController
@@ -21,15 +24,18 @@ public class CustomerController {
     private final PaymentService paymentService;
     private final MessagingService messagingService;
     private final RatingService ratingService;
+    private final SupportResponseEstimateService responseEstimateService;
 
     public CustomerController(TicketService ticketService,
                               PaymentService paymentService,
                               MessagingService messagingService,
-                              RatingService ratingService) {
+                              RatingService ratingService,
+                              SupportResponseEstimateService responseEstimateService) {
         this.ticketService = ticketService;
         this.paymentService = paymentService;
         this.messagingService = messagingService;
         this.ratingService = ratingService;
+        this.responseEstimateService = responseEstimateService;
     }
 
     @GetMapping("/dashboard/stats")
@@ -73,13 +79,22 @@ public class CustomerController {
     @GetMapping("/tickets/{id}")
     public ResponseEntity<?> ticket(@RequestHeader("X-User-Id") String userId, @PathVariable String id) {
         try {
-            return ResponseEntity.ok(Map.of(
-                    "ticket", ticketService.getTicket(userId, id),
-                    "messages", ticketService.getMessages(userId, id)
-            ));
+            Ticket ticket = ticketService.getTicket(userId, id);
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("ticket", ticket);
+            response.put("messages", ticketService.getMessages(userId, id));
+            if (isAwaitingResponse(ticket)) {
+                response.put("estimatedResponse", responseEstimateService.estimate(ticket.getPriority()));
+            }
+            return ResponseEntity.ok(response);
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
+    }
+
+    @GetMapping("/tickets/estimated-response")
+    public ResponseEntity<?> estimatedResponse(@RequestParam(defaultValue = "medium") String priority) {
+        return ResponseEntity.ok(responseEstimateService.estimate(priority));
     }
 
     @PostMapping("/tickets/{id}/reply")
@@ -177,5 +192,13 @@ public class CustomerController {
             paymentService.notifyCheckoutFailed(userId, e.getMessage());
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
+    }
+
+    private boolean isAwaitingResponse(Ticket ticket) {
+        if (ticket == null || ticket.getStatus() == null) {
+            return false;
+        }
+        String status = ticket.getStatus().toLowerCase();
+        return "open".equals(status) || "in_progress".equals(status);
     }
 }

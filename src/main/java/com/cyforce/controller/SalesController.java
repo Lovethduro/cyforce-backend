@@ -71,6 +71,16 @@ public class SalesController {
         }
     }
 
+    @PostMapping("/customers")
+    public ResponseEntity<?> createCustomer(@RequestHeader("X-User-Id") String userId,
+                                            @RequestBody Map<String, String> body) {
+        try {
+            return ResponseEntity.ok(salesDashboardService.createCustomer(userId, body));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
     @GetMapping("/leads")
     public ResponseEntity<?> leads(@RequestHeader("X-User-Id") String userId) {
         return ResponseEntity.ok(leadService.myLeads(userId));

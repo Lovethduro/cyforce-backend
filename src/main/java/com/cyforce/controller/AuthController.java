@@ -9,7 +9,9 @@ import com.cyforce.dto.RegisterRequest;
 import com.cyforce.service.AuthService;
 import com.cyforce.service.EmailService;
 import com.cyforce.service.MfaService;
+import com.cyforce.service.ReferralService;
 import com.cyforce.service.UserService;
+import com.cyforce.repository.UserRepository;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -24,12 +26,17 @@ public class AuthController {
     private final EmailService emailService;
     private final MfaService mfaService;
     private final UserService userService;
+    private final ReferralService referralService;
+    private final UserRepository userRepository;
 
-    public AuthController(AuthService authService, EmailService emailService, MfaService mfaService, UserService userService) {
+    public AuthController(AuthService authService, EmailService emailService, MfaService mfaService,
+                            UserService userService, ReferralService referralService, UserRepository userRepository) {
         this.authService = authService;
         this.emailService = emailService;
         this.mfaService = mfaService;
         this.userService = userService;
+        this.referralService = referralService;
+        this.userRepository = userRepository;
     }
 
     @GetMapping("/me")
@@ -78,14 +85,32 @@ public class AuthController {
     }
 
     @PostMapping("/register")
-    public ResponseEntity<?> register(@RequestBody RegisterRequest request) {
+    public ResponseEntity<?> register(@RequestBody Map<String, Object> body) {
         try {
+            RegisterRequest request = new RegisterRequest();
+            request.setFullName(stringVal(body.get("fullName")));
+            request.setEmail(stringVal(body.get("email")));
+            request.setPhone(stringVal(body.get("phone")));
+            request.setCompanyName(stringVal(body.get("companyName")));
+            request.setCustomerType(stringVal(body.get("customerType")));
+            request.setPassword(stringVal(body.get("password")));
             AuthResponse response = authService.register(request);
+            userRepository.findByEmailIgnoreCase(request.getEmail()).ifPresent(user ->
+                    referralService.applyOnRegistration(
+                            user,
+                            stringVal(body.get("referralCode")),
+                            stringVal(body.get("hearAboutUs"))
+                    )
+            );
             return ResponseEntity.ok(response);
         } catch (RuntimeException e) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                     .body(Map.of("error", e.getMessage()));
         }
+    }
+
+    private String stringVal(Object raw) {
+        return raw == null ? null : raw.toString();
     }
 
     @GetMapping("/test")

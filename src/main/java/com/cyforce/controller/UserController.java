@@ -3,6 +3,7 @@ package com.cyforce.controller;
 import com.cyforce.dto.UpdateProfileRequest;
 import com.cyforce.dto.UserListItemResponse;
 import com.cyforce.dto.UserProfileResponse;
+import com.cyforce.service.MfaService;
 import com.cyforce.service.UserService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -19,9 +20,11 @@ import java.util.Map;
 public class UserController {
 
     private final UserService userService;
+    private final MfaService mfaService;
 
-    public UserController(UserService userService) {
+    public UserController(UserService userService, MfaService mfaService) {
         this.userService = userService;
+        this.mfaService = mfaService;
     }
 
     @GetMapping("/me")
@@ -60,6 +63,17 @@ public class UserController {
                                         @RequestParam("file") MultipartFile file) {
         try {
             return ResponseEntity.ok(userService.updateLogo(userId, file));
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/me/mfa/disable")
+    public ResponseEntity<?> disableMfa(@RequestHeader("X-User-Id") String userId,
+                                        @RequestBody Map<String, String> body) {
+        try {
+            mfaService.disableMfa(userId, body.get("password"));
+            return ResponseEntity.ok(Map.of("message", "MFA disabled successfully"));
         } catch (RuntimeException e) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("error", e.getMessage()));
         }
