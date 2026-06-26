@@ -38,11 +38,11 @@ public class AdminService {
     private final SystemMetricsService systemMetricsService;
     private final AuditLogRepository auditLogRepository;
     private final EmailService emailService;
+    private final AuditReportService auditReportService;
+    private final UserSessionService userSessionService;
 
     private static final DateTimeFormatter ISO = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
-    private static final List<String> SECURITY_ACTIONS = List.of(
-            "LOGIN_FAILED", "AUTH_ROLE_MISMATCH", "DEACTIVATED_LOGIN"
-    );
+    private static final List<String> SECURITY_ACTIONS = AuditLogService.SECURITY_ACTIONS;
 
     public AdminService(UserRepository userRepository,
                         TicketRepository ticketRepository,
@@ -55,7 +55,9 @@ public class AdminService {
                         NotificationService notificationService,
                         SystemMetricsService systemMetricsService,
                         AuditLogRepository auditLogRepository,
-                        EmailService emailService) {
+                        EmailService emailService,
+                        AuditReportService auditReportService,
+                        UserSessionService userSessionService) {
         this.userRepository = userRepository;
         this.ticketRepository = ticketRepository;
         this.leadRepository = leadRepository;
@@ -68,6 +70,8 @@ public class AdminService {
         this.systemMetricsService = systemMetricsService;
         this.auditLogRepository = auditLogRepository;
         this.emailService = emailService;
+        this.auditReportService = auditReportService;
+        this.userSessionService = userSessionService;
     }
 
     public DashboardStatsResponse dashboardStats(String userId) {
@@ -79,6 +83,10 @@ public class AdminService {
     }
 
     public User createUser(String adminId, Map<String, String> body) {
+        return createUser(adminId, body, null);
+    }
+
+    public User createUser(String adminId, Map<String, String> body, String clientIp) {
         User admin = requestUserService.requireUser(adminId);
         requestUserService.requireRole(admin, "ADMIN");
 
@@ -113,7 +121,7 @@ public class AdminService {
         user.setCreatedAt(LocalDateTime.now());
         user.setUpdatedAt(LocalDateTime.now());
         User saved = userRepository.save(user);
-        auditLogService.log(admin, "USER_CREATE", "User Management", saved.getEmail());
+        auditLogService.log(admin, "USER_CREATE", "User Management", saved.getEmail(), clientIp);
         try {
             emailService.sendWelcomeCredentialsEmail(saved.getEmail(), saved.getFullName(), tempPassword);
         } catch (Exception e) {
@@ -123,6 +131,10 @@ public class AdminService {
     }
 
     public User updateUser(String adminId, String targetId, Map<String, String> body) {
+        return updateUser(adminId, targetId, body, null);
+    }
+
+    public User updateUser(String adminId, String targetId, Map<String, String> body, String clientIp) {
         User admin = requestUserService.requireUser(adminId);
         requestUserService.requireRole(admin, "ADMIN");
         User user = requestUserService.requireUser(targetId);
@@ -143,11 +155,15 @@ public class AdminService {
         }
         user.setUpdatedAt(LocalDateTime.now());
         User saved = userRepository.save(user);
-        auditLogService.log(admin, "USER_UPDATE", "User Management", saved.getEmail());
+        auditLogService.log(admin, "USER_UPDATE", "User Management", saved.getEmail(), clientIp);
         return saved;
     }
 
     public void deleteUser(String adminId, String targetId) {
+        deleteUser(adminId, targetId, null);
+    }
+
+    public void deleteUser(String adminId, String targetId, String clientIp) {
         User admin = requestUserService.requireUser(adminId);
         requestUserService.requireRole(admin, "ADMIN");
         if (admin.getId().equals(targetId)) {
@@ -157,7 +173,7 @@ public class AdminService {
         user.setActive(false);
         user.setUpdatedAt(LocalDateTime.now());
         userRepository.save(user);
-        auditLogService.log(admin, "USER_DEACTIVATE", "User Management", user.getEmail());
+        auditLogService.log(admin, "USER_DEACTIVATE", "User Management", user.getEmail(), clientIp);
     }
 
     public List<Ticket> allTickets(String userId) {
@@ -175,6 +191,15 @@ public class AdminService {
         return auditLogService.all();
     }
 
+    public List<AuditLog> securityAuditLogs(String userId) {
+        requestUserService.requireRole(requestUserService.requireUser(userId), "ADMIN");
+        return auditLogService.securityLogs();
+    }
+
+    public List<Map<String, Object>> listSessions(String userId) {
+        return userSessionService.listSessionsForAdmin(userId);
+    }
+
     public AdminDashboardOverviewResponse adminOverview(String userId) {
         DashboardStatsResponse stats = dashboardStats(userId);
         List<User> users = userRepository.findAll();
@@ -186,15 +211,12 @@ public class AdminService {
                 .filter(t -> "open".equals(t.getStatus()) || "in_progress".equals(t.getStatus()))
                 .count();
 
-        LocalDateTime sessionCutoff = LocalDateTime.now().minusHours(24);
-        long activeSessions = users.stream()
-                .filter(u -> u.getLastLoginAt() != null && u.getLastLoginAt().isAfter(sessionCutoff))
-                .count();
+        long activeSessions = userSessionService.countActiveSessions();
 
         List<AdminDashboardOverviewResponse.AnomalyAlertItem> anomalyAlerts = buildAnomalyAlerts(userId);
 
         List<UserListItemResponse> pendingUsers = users.stream()
-                .filter(u -> !u.isEmailVerified() || !u.isActive())
+                .filter(UserService::isPendingAccountApproval)
                 .sorted(Comparator.comparing(User::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
                 .limit(10)
                 .map(userService::toListItem)
@@ -219,6 +241,10 @@ public class AdminService {
     }
 
     public Map<String, Object> broadcastAnnouncement(String adminId, String message, String audience) {
+        return broadcastAnnouncement(adminId, message, audience, null);
+    }
+
+    public Map<String, Object> broadcastAnnouncement(String adminId, String message, String audience, String clientIp) {
         User admin = requestUserService.requireUser(adminId);
         requestUserService.requireRole(admin, "ADMIN");
         if (message == null || message.isBlank()) {
@@ -227,8 +253,56 @@ public class AdminService {
         String trimmed = message.trim();
         String target = audience == null || audience.isBlank() ? "all" : audience;
         int recipients = notificationService.broadcastToAudience("System Announcement", trimmed, target);
-        auditLogService.log(admin, "ANNOUNCEMENT", "System", "Broadcast (" + target + ") to " + recipients + " users: " + trimmed);
+        auditLogService.log(admin, "ANNOUNCEMENT", "System", "Broadcast (" + target + ") to " + recipients + " users: " + trimmed, clientIp);
         return Map.of("message", "Announcement sent successfully", "recipients", recipients, "audience", target);
+    }
+
+    public byte[] securityAuditReport(String userId, String format, String clientIp) {
+        User admin = requestUserService.requireUser(userId);
+        requestUserService.requireRole(admin, "ADMIN");
+        List<AuditLog> logs = auditLogService.securityLogs();
+        String normalized = normalizeReportFormat(format);
+        auditLogService.log(
+                admin,
+                "REPORT_GENERATED",
+                "Security Audit",
+                "Security audit " + normalized.toUpperCase() + " (" + logs.size() + " events)",
+                clientIp
+        );
+        return buildReport(logs, "Security Audit Report", normalized);
+    }
+
+    public byte[] auditLogsReport(String userId, String format, String clientIp) {
+        User admin = requestUserService.requireUser(userId);
+        requestUserService.requireRole(admin, "ADMIN", "SUPERVISOR");
+        List<AuditLog> logs = auditLogService.all();
+        String normalized = normalizeReportFormat(format);
+        auditLogService.log(
+                admin,
+                "REPORT_GENERATED",
+                "Audit Logs",
+                "Full audit log " + normalized.toUpperCase() + " (" + logs.size() + " events)",
+                clientIp
+        );
+        return buildReport(logs, "Audit Log Report", normalized);
+    }
+
+    private byte[] buildReport(List<AuditLog> logs, String title, String format) {
+        if ("pdf".equals(format)) {
+            return auditReportService.toPdf(logs, title);
+        }
+        return auditReportService.toCsv(logs, title);
+    }
+
+    private String normalizeReportFormat(String format) {
+        if (format == null || format.isBlank()) {
+            return "csv";
+        }
+        String value = format.trim().toLowerCase(Locale.ROOT);
+        if (!"csv".equals(value) && !"pdf".equals(value)) {
+            throw new RuntimeException("Unsupported report format. Use csv or pdf.");
+        }
+        return value;
     }
 
     private List<AdminDashboardOverviewResponse.DayActivityItem> buildRegistrationActivity(List<User> users) {
@@ -294,13 +368,16 @@ public class AdminService {
     }
 
     private String securityAlertType(String action) {
-        if ("AUTH_ROLE_MISMATCH".equals(action)) {
-            return "Critical";
+        if (action == null) {
+            return "Info";
         }
-        if ("LOGIN_FAILED".equals(action)) {
-            return "Warning";
-        }
-        return "Info";
+        return switch (action) {
+            case "AUTH_ROLE_MISMATCH" -> "Critical";
+            case "LOGIN_FAILED" -> "Warning";
+            case "PASSWORD_RESET_REQUESTED", "PASSWORD_RESET", "PASSWORD_CHANGED", "MFA_ENABLED", "MFA_DISABLED" -> "Info";
+            case "LOGIN_SUCCESS" -> "Success";
+            default -> "Info";
+        };
     }
 
     private Double computeUserGrowthPercent(List<User> users) {

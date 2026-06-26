@@ -251,6 +251,8 @@ public class SupportDashboardService {
             case "busy" -> "busy";
             case "away" -> "away";
             case "on_break", "break" -> "on_break";
+            case "unavailable", "offline" -> "unavailable";
+            case "online" -> "online";
             default -> "available";
         };
     }

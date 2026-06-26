@@ -3,9 +3,13 @@ package com.cyforce.service;
 import jakarta.mail.MessagingException;
 import jakarta.mail.internet.MimeMessage;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
+
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 
 @Service
 public class EmailService {
@@ -13,9 +17,15 @@ public class EmailService {
     @Autowired
     private JavaMailSender mailSender;
 
+    private final String appUrl;
+
+    public EmailService(@Value("${app.url:http://localhost:3000}") String appUrl) {
+        this.appUrl = appUrl.endsWith("/") ? appUrl.substring(0, appUrl.length() - 1) : appUrl;
+    }
+
     public void sendVerificationEmail(String to, String token) throws MessagingException {
         String subject = "Verify Your CyForce Account";
-        String verificationUrl = "http://localhost:3000/verify-email?token=" + token;
+        String verificationUrl = appUrl + "/verify-email?token=" + URLEncoder.encode(token, StandardCharsets.UTF_8);
 
         String htmlContent = String.format("""
             <!DOCTYPE html>
@@ -60,7 +70,7 @@ public class EmailService {
     public void sendPasswordResetEmail(String to, String token) {
         try {
             String subject = "Reset Your CyForce Password";
-            String resetUrl = "http://localhost:3000/reset-password?token=" + token;
+            String resetUrl = appUrl + "/reset-password?token=" + URLEncoder.encode(token, StandardCharsets.UTF_8);
             String htmlContent = String.format("""
                 <!DOCTYPE html>
                 <html>

@@ -20,18 +20,18 @@ public class MfaService {
 
     private final UserRepository userRepository;
     private final EmailService emailService;
-    private final SmsService smsService;
     private final PasswordService passwordService;
+    private final SecurityEventService securityEventService;
     private final GoogleAuthenticator googleAuthenticator;
 
     public MfaService(UserRepository userRepository,
                       EmailService emailService,
-                      SmsService smsService,
-                      PasswordService passwordService) {
+                      PasswordService passwordService,
+                      SecurityEventService securityEventService) {
         this.userRepository = userRepository;
         this.emailService = emailService;
-        this.smsService = smsService;
         this.passwordService = passwordService;
+        this.securityEventService = securityEventService;
         GoogleAuthenticatorConfig config = new GoogleAuthenticatorConfig.GoogleAuthenticatorConfigBuilder()
                 .setTimeStepSizeInMillis(TimeUnit.SECONDS.toMillis(30))
                 .setWindowSize(10)
@@ -51,6 +51,10 @@ public class MfaService {
     }
 
     public void disableMfa(String userId, String password) {
+        disableMfa(userId, password, null);
+    }
+
+    public void disableMfa(String userId, String password, String clientIp) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("User not found"));
         if (!user.isMfaEnabled()) {
@@ -69,6 +73,7 @@ public class MfaService {
         clearLoginChallenge(user);
         user.setUpdatedAt(LocalDateTime.now());
         userRepository.save(user);
+        securityEventService.recordMfaDisabled(user, clientIp);
     }
 
     public MfaSetupInitResponse initSetup(String userId, String method) {
@@ -81,12 +86,15 @@ public class MfaService {
         return switch (method) {
             case "authenticator" -> initAuthenticatorSetup(user);
             case "email" -> initEmailSetup(user);
-            case "sms" -> initSmsSetup(user);
-            default -> throw new RuntimeException("Unsupported MFA method");
+            default -> throw new RuntimeException("Unsupported MFA method. Choose authenticator or email.");
         };
     }
 
     public void verifySetup(String userId, String code, String clientSecret) {
+        verifySetup(userId, code, clientSecret, null);
+    }
+
+    public void verifySetup(String userId, String code, String clientSecret, String clientIp) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
@@ -100,7 +108,7 @@ public class MfaService {
 
         boolean valid = switch (user.getMfaPendingMethod()) {
             case "authenticator" -> verifyAuthenticatorSetup(user, code, clientSecret);
-            case "email", "sms" -> verifyEmailCode(user, code);
+            case "email" -> verifyEmailCode(user, code);
             default -> throw new RuntimeException("Unsupported MFA method");
         };
 
@@ -121,6 +129,7 @@ public class MfaService {
         clearPendingMfa(user);
         user.setUpdatedAt(LocalDateTime.now());
         userRepository.save(user);
+        securityEventService.recordMfaEnabled(user, user.getMfaMethod(), clientIp);
     }
 
     public String beginLoginChallenge(User user) {
@@ -133,16 +142,15 @@ public class MfaService {
         user.setMfaLoginTokenExpiry(LocalDateTime.now().plusMinutes(10));
         user.setUpdatedAt(LocalDateTime.now());
 
-        String method = user.getMfaMethod() == null ? "authenticator" : user.getMfaMethod();
-        if ("email".equals(method) || "sms".equals(method)) {
+        String method = normalizeMfaMethod(user.getMfaMethod());
+        if ("sms".equals(user.getMfaMethod())) {
+            user.setMfaMethod("email");
+        }
+        if ("email".equals(method)) {
             String code = String.format("%06d", new Random().nextInt(1_000_000));
             user.setMfaLoginCode(code);
             user.setMfaLoginCodeExpiry(LocalDateTime.now().plusMinutes(10));
-            if ("sms".equals(method)) {
-                smsService.sendMfaCode(user.getPhone(), code);
-            } else {
-                emailService.sendMfaSetupCode(user.getEmail(), code);
-            }
+            emailService.sendMfaSetupCode(user.getEmail(), code);
         } else {
             user.setMfaLoginCode(null);
             user.setMfaLoginCodeExpiry(null);
@@ -168,10 +176,10 @@ public class MfaService {
             throw new RuntimeException("MFA session expired. Please sign in again.");
         }
 
-        String method = user.getMfaMethod() == null ? "authenticator" : user.getMfaMethod();
+        String method = normalizeMfaMethod(user.getMfaMethod());
         boolean valid = switch (method) {
             case "authenticator" -> verifyAuthenticatorCode(user.getTotpSecret(), code);
-            case "email", "sms" -> verifyLoginCode(user, code);
+            case "email" -> verifyLoginCode(user, code);
             default -> false;
         };
 
@@ -194,9 +202,12 @@ public class MfaService {
             throw new RuntimeException("MFA session expired. Please sign in again.");
         }
 
-        String method = user.getMfaMethod();
-        if (!"email".equals(method) && !"sms".equals(method)) {
-            throw new RuntimeException("Resend is only available for email or SMS MFA");
+        String method = normalizeMfaMethod(user.getMfaMethod());
+        if ("sms".equals(user.getMfaMethod())) {
+            user.setMfaMethod("email");
+        }
+        if (!"email".equals(method)) {
+            throw new RuntimeException("Resend is only available for email MFA");
         }
 
         String code = String.format("%06d", new Random().nextInt(1_000_000));
@@ -204,12 +215,17 @@ public class MfaService {
         user.setMfaLoginCodeExpiry(LocalDateTime.now().plusMinutes(10));
         user.setUpdatedAt(LocalDateTime.now());
         userRepository.save(user);
+        emailService.sendMfaSetupCode(user.getEmail(), code);
+    }
 
-        if ("sms".equals(method)) {
-            smsService.sendMfaCode(user.getPhone(), code);
-        } else {
-            emailService.sendMfaSetupCode(user.getEmail(), code);
+    private String normalizeMfaMethod(String method) {
+        if (method == null || method.isBlank()) {
+            return "authenticator";
         }
+        if ("sms".equals(method)) {
+            return "email";
+        }
+        return method;
     }
 
     private boolean verifyLoginCode(User user, String code) {
@@ -278,33 +294,6 @@ public class MfaService {
         );
     }
 
-    private MfaSetupInitResponse initSmsSetup(User user) {
-        if (user.getPhone() == null || user.getPhone().isBlank()) {
-            throw new RuntimeException("No phone number on your account. Please register with a valid phone number.");
-        }
-
-        String code = String.format("%06d", new Random().nextInt(1_000_000));
-
-        user.setMfaPendingMethod("sms");
-        user.setMfaPendingSecret(null);
-        user.setMfaPendingCode(code);
-        user.setMfaPendingCodeExpiry(LocalDateTime.now().plusMinutes(10));
-        user.setUpdatedAt(LocalDateTime.now());
-        userRepository.save(user);
-
-        String smsMessage = smsService.sendMfaCode(user.getPhone(), code);
-        String responseMessage = smsMessage != null
-                ? smsMessage
-                : "A verification code has been sent to " + maskPhone(user.getPhone());
-
-        return new MfaSetupInitResponse(
-                "sms",
-                null,
-                null,
-                responseMessage
-        );
-    }
-
     private MfaSetupInitResponse initEmailSetup(User user) {
         String code = String.format("%06d", new Random().nextInt(1_000_000));
 
@@ -367,14 +356,6 @@ public class MfaService {
         }
 
         return user;
-    }
-
-    private String maskPhone(String phone) {
-        String digits = phone.replaceAll("\\s+", "");
-        if (digits.length() <= 4) {
-            return digits;
-        }
-        return "***" + digits.substring(digits.length() - 4);
     }
 
     private void clearPendingMfa(User user) {

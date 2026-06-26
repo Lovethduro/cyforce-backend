@@ -293,6 +293,9 @@ public class MessagingService {
             throw new RuntimeException("Message is required");
         }
         User user = requestUserService.requireUser(userId);
+        if ("ADMIN".equalsIgnoreCase(user.getRole())) {
+            throw new RuntimeException("Administrators have read-only access to sales conversations");
+        }
         Conversation conversation = requireAccess(userId, conversationId);
 
         ConversationMessage entry = new ConversationMessage();
@@ -332,8 +335,7 @@ public class MessagingService {
     public ConversationMessage sendInvoice(String userId, String conversationId, long amountNaira, String description) {
         User agent = requestUserService.requireUser(userId);
         Conversation conversation = requireAccess(userId, conversationId);
-        if (!userId.equals(conversation.getSalesAgentId())
-                && !"ADMIN".equalsIgnoreCase(agent.getRole())) {
+        if (!userId.equals(conversation.getSalesAgentId())) {
             throw new RuntimeException("Only the assigned sales agent can send an invoice");
         }
         if (amountNaira < 1) {
@@ -391,8 +393,7 @@ public class MessagingService {
     public Conversation forwardToSupervisor(String userId, String conversationId, String reason) {
         User actor = requestUserService.requireUser(userId);
         Conversation conversation = requireAccess(userId, conversationId);
-        if (!userId.equals(conversation.getSalesAgentId())
-                && !"ADMIN".equalsIgnoreCase(actor.getRole())) {
+        if (!userId.equals(conversation.getSalesAgentId())) {
             throw new RuntimeException("Only the assigned sales agent can forward this conversation");
         }
 

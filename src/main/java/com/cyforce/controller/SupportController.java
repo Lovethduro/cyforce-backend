@@ -143,6 +143,15 @@ public class SupportController {
         }
     }
 
+    @PostMapping("/tickets/{id}/takeover")
+    public ResponseEntity<?> takeover(@RequestHeader("X-User-Id") String userId, @PathVariable String id) {
+        try {
+            return ResponseEntity.ok(ticketService.adminTakeover(userId, id));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
     @PostMapping("/tickets/{id}/transfer-to-sales")
     public ResponseEntity<?> transferToSales(@RequestHeader("X-User-Id") String userId,
                                              @PathVariable String id,

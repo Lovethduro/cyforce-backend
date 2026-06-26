@@ -33,6 +33,9 @@ public class Ticket {
     // Used for automatic SLA escalation notifications to avoid duplicate alerts.
     private boolean slaEscalated = false;
     private LocalDateTime slaEscalatedAt;
+    private boolean adminTakeover = false;
+    private LocalDateTime adminTakeoverAt;
+    private String adminTakeoverById;
     private String guestAccessToken;
     private LocalDateTime guestTokenExpiresAt;
     private String mergedIntoTicketId;

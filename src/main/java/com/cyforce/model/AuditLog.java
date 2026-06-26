@@ -20,5 +20,6 @@ public class AuditLog {
     private String action;
     private String module;
     private String details;
+    private String clientIp;
     private LocalDateTime createdAt;
 }

@@ -60,7 +60,11 @@ public class AdminDashboardOverviewResponse {
     @AllArgsConstructor
     public static class StorageSliceItem {
         private String name;
+        /** Percentage of total storage (used by the chart). */
         private int value;
+        /** Human-readable size for the legend, e.g. "1.2 MB · 24 records". */
+        private String sizeLabel;
+        private long bytes;
     }
 
     @Data

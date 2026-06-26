@@ -41,6 +41,7 @@ public class UserService {
     public User ensureAdminUser(String email, String fullName, String password) {
         String normalizedEmail = email == null ? "" : email.trim().toLowerCase();
         User user = userRepository.findByEmailIgnoreCase(normalizedEmail).orElse(null);
+        boolean passwordSetFromBootstrap = false;
 
         if (user == null) {
             if (password == null || password.isBlank()) {
@@ -56,13 +57,16 @@ public class UserService {
             user.setCompanyName("CyForce Technologies");
             user.setPassword(passwordService.encode(password));
             user.setCreatedAt(LocalDateTime.now());
+            passwordSetFromBootstrap = true;
             log.info("Creating new admin account for {}", normalizedEmail);
         } else {
             log.info("Promoting existing account to ADMIN: {}", user.getEmail());
-            if (password != null && !password.isBlank()) {
+            if (password != null && !password.isBlank()
+                    && (user.getPassword() == null || user.getPassword().isBlank())) {
                 user.setPassword(passwordService.encode(password));
                 user.setAuthProvider("LOCAL");
-                log.info("Reset local login password (BCrypt) for bootstrap admin {}", user.getEmail());
+                passwordSetFromBootstrap = true;
+                log.info("Set initial password for bootstrap admin {}", user.getEmail());
             }
         }
 
@@ -73,7 +77,7 @@ public class UserService {
         user.setUpdatedAt(LocalDateTime.now());
         User saved = userRepository.save(user);
 
-        if (password != null && !password.isBlank()) {
+        if (passwordSetFromBootstrap && password != null && !password.isBlank()) {
             if (!passwordService.matchesRaw(password, saved.getPassword())) {
                 log.error("Bootstrap password verification failed for {} — hash may be corrupt", saved.getEmail());
             } else {
@@ -106,9 +110,11 @@ public class UserService {
             log.info("Creating new {} account for {}", normalizedRole, normalizedEmail);
         } else {
             log.info("Updating existing account to {}: {}", normalizedRole, user.getEmail());
-            if (password != null && !password.isBlank()) {
+            if (password != null && !password.isBlank()
+                    && (user.getPassword() == null || user.getPassword().isBlank())) {
                 user.setPassword(passwordService.encode(password));
                 user.setAuthProvider("LOCAL");
+                log.info("Set initial password for bootstrap staff {}", user.getEmail());
             }
         }
 
@@ -218,7 +224,7 @@ public class UserService {
         List<User> users = userRepository.findAll();
         long totalUsers = users.size();
         long activeUsers = users.stream().filter(User::isActive).count();
-        long pendingApprovals = users.stream().filter(u -> !u.isEmailVerified() || !u.isActive()).count();
+        long pendingApprovals = users.stream().filter(UserService::isPendingAccountApproval).count();
         long mfaEnabledUsers = users.stream().filter(User::isMfaEnabled).count();
         long verifiedUsers = users.stream().filter(User::isEmailVerified).count();
 
@@ -245,6 +251,11 @@ public class UserService {
     public User requireUser(String userId) {
         return userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("User not found"));
+    }
+
+    /** Active accounts still awaiting email verification (not deactivated users). */
+    public static boolean isPendingAccountApproval(User user) {
+        return user != null && user.isActive() && !user.isEmailVerified();
     }
 
     public void touchActivity(String userId) {

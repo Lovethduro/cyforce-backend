@@ -42,7 +42,6 @@ public class SecurityConfig {
                                 "/api/public/**",
                                 "/uploads/**",
                                 "/api/analytics/**",
-                                "/api/team-chat/**",
                                 "/api/calendar/**",
                                 "/api/leave/**",
                                 "/api/referrals/**",

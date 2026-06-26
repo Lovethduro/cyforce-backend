@@ -2,11 +2,18 @@ package com.cyforce.controller;
 
 import com.cyforce.model.User;
 import com.cyforce.service.AdminService;
+import com.cyforce.service.DataManagementService;
 import com.cyforce.service.KnowledgeBaseService;
 import com.cyforce.service.SystemConfigService;
+import com.cyforce.util.WebRequestUtils;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Map;
 
 @RestController
@@ -17,13 +24,16 @@ public class AdminController {
     private final AdminService adminService;
     private final SystemConfigService systemConfigService;
     private final KnowledgeBaseService knowledgeBaseService;
+    private final DataManagementService dataManagementService;
 
     public AdminController(AdminService adminService,
                            SystemConfigService systemConfigService,
-                           KnowledgeBaseService knowledgeBaseService) {
+                           KnowledgeBaseService knowledgeBaseService,
+                           DataManagementService dataManagementService) {
         this.adminService = adminService;
         this.systemConfigService = systemConfigService;
         this.knowledgeBaseService = knowledgeBaseService;
+        this.dataManagementService = dataManagementService;
     }
 
     @GetMapping("/dashboard/stats")
@@ -45,9 +55,11 @@ public class AdminController {
     }
 
     @PostMapping("/users")
-    public ResponseEntity<?> createUser(@RequestHeader("X-User-Id") String userId, @RequestBody Map<String, String> body) {
+    public ResponseEntity<?> createUser(@RequestHeader("X-User-Id") String userId,
+                                        @RequestBody Map<String, String> body,
+                                        HttpServletRequest request) {
         try {
-            User created = adminService.createUser(userId, body);
+            User created = adminService.createUser(userId, body, WebRequestUtils.clientIp(request));
             return ResponseEntity.ok(created);
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
@@ -55,18 +67,23 @@ public class AdminController {
     }
 
     @PutMapping("/users/{id}")
-    public ResponseEntity<?> updateUser(@RequestHeader("X-User-Id") String userId, @PathVariable String id, @RequestBody Map<String, String> body) {
+    public ResponseEntity<?> updateUser(@RequestHeader("X-User-Id") String userId,
+                                        @PathVariable String id,
+                                        @RequestBody Map<String, String> body,
+                                        HttpServletRequest request) {
         try {
-            return ResponseEntity.ok(adminService.updateUser(userId, id, body));
+            return ResponseEntity.ok(adminService.updateUser(userId, id, body, WebRequestUtils.clientIp(request)));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
     }
 
     @DeleteMapping("/users/{id}")
-    public ResponseEntity<?> deleteUser(@RequestHeader("X-User-Id") String userId, @PathVariable String id) {
+    public ResponseEntity<?> deleteUser(@RequestHeader("X-User-Id") String userId,
+                                        @PathVariable String id,
+                                        HttpServletRequest request) {
         try {
-            adminService.deleteUser(userId, id);
+            adminService.deleteUser(userId, id, WebRequestUtils.clientIp(request));
             return ResponseEntity.ok(Map.of("message", "User deactivated"));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
@@ -100,11 +117,69 @@ public class AdminController {
         }
     }
 
+    @GetMapping("/security-audit")
+    public ResponseEntity<?> securityAudit(@RequestHeader("X-User-Id") String userId) {
+        try {
+            return ResponseEntity.ok(adminService.securityAuditLogs(userId));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/sessions")
+    public ResponseEntity<?> sessions(@RequestHeader("X-User-Id") String userId) {
+        try {
+            return ResponseEntity.ok(adminService.listSessions(userId));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/security-audit/report")
+    public ResponseEntity<byte[]> securityAuditReport(@RequestHeader("X-User-Id") String userId,
+                                                      @RequestParam(value = "format", defaultValue = "csv") String format,
+                                                      HttpServletRequest request) {
+        try {
+            String normalized = format == null ? "csv" : format.trim().toLowerCase();
+            byte[] report = adminService.securityAuditReport(userId, normalized, WebRequestUtils.clientIp(request));
+            String filename = "security-audit-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")) + "." + normalized;
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                    .contentType(MediaType.parseMediaType("pdf".equals(normalized) ? "application/pdf" : "text/csv"))
+                    .body(report);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(null);
+        }
+    }
+
+    @GetMapping("/audit-logs/report")
+    public ResponseEntity<byte[]> auditLogsReport(@RequestHeader("X-User-Id") String userId,
+                                                  @RequestParam(value = "format", defaultValue = "csv") String format,
+                                                  HttpServletRequest request) {
+        try {
+            String normalized = format == null ? "csv" : format.trim().toLowerCase();
+            byte[] report = adminService.auditLogsReport(userId, normalized, WebRequestUtils.clientIp(request));
+            String filename = "audit-log-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")) + "." + normalized;
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                    .contentType(MediaType.parseMediaType("pdf".equals(normalized) ? "application/pdf" : "text/csv"))
+                    .body(report);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(null);
+        }
+    }
+
     @PostMapping("/announcements")
     public ResponseEntity<?> broadcastAnnouncement(@RequestHeader("X-User-Id") String userId,
-                                                   @RequestBody Map<String, String> body) {
+                                                   @RequestBody Map<String, String> body,
+                                                   HttpServletRequest request) {
         try {
-            return ResponseEntity.ok(adminService.broadcastAnnouncement(userId, body.get("message"), body.get("audience")));
+            return ResponseEntity.ok(adminService.broadcastAnnouncement(
+                    userId,
+                    body.get("message"),
+                    body.get("audience"),
+                    WebRequestUtils.clientIp(request)
+            ));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
@@ -167,6 +242,55 @@ public class AdminController {
             return ResponseEntity.ok(Map.of("message", "Deleted"));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/data-management/overview")
+    public ResponseEntity<?> dataManagementOverview(@RequestHeader("X-User-Id") String userId) {
+        try {
+            return ResponseEntity.ok(dataManagementService.overview(userId));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PutMapping("/data-management/retention")
+    public ResponseEntity<?> updateDataRetention(@RequestHeader("X-User-Id") String userId,
+                                                 @RequestBody Map<String, Object> body) {
+        try {
+            int days = body.get("retentionDays") instanceof Number number
+                    ? number.intValue()
+                    : Integer.parseInt(String.valueOf(body.get("retentionDays")));
+            return ResponseEntity.ok(dataManagementService.updateRetention(userId, days));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/data-management/backup")
+    public ResponseEntity<?> runDataBackup(@RequestHeader("X-User-Id") String userId,
+                                           HttpServletRequest request) {
+        try {
+            return ResponseEntity.ok(dataManagementService.runBackup(userId, WebRequestUtils.clientIp(request)));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/data-management/export")
+    public ResponseEntity<byte[]> exportData(@RequestHeader("X-User-Id") String userId,
+                                           @RequestParam(value = "format", defaultValue = "csv") String format,
+                                           HttpServletRequest request) {
+        try {
+            String normalized = format == null ? "csv" : format.trim().toLowerCase();
+            byte[] report = dataManagementService.exportData(userId, normalized, WebRequestUtils.clientIp(request));
+            String filename = "cyforce-data-export-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")) + "." + normalized;
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                    .contentType(MediaType.parseMediaType("pdf".equals(normalized) ? "application/pdf" : "text/csv"))
+                    .body(report);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(null);
         }
     }
 }

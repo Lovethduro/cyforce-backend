@@ -122,9 +122,9 @@ public class DataSeeder implements ApplicationRunner {
         }
 
         auditLogRepository.saveAll(List.of(
-                new AuditLog(null, null, "admin@cyforce.com", "USER_UPDATE", "User Management", "Updated user profile", LocalDateTime.now().minusMinutes(5)),
-                new AuditLog(null, null, "supervisor@cyforce.com", "ROLE_ASSIGN", "Roles & Permissions", "Assigned sales agent role", LocalDateTime.now().minusMinutes(15)),
-                new AuditLog(null, null, "support@cyforce.com", "TICKET_CREATE", "Ticketing", "Created ticket for billing issue", LocalDateTime.now().minusHours(1))
+                new AuditLog(null, null, "admin@cyforce.com", "USER_UPDATE", "User Management", "Updated user profile", "127.0.0.1", LocalDateTime.now().minusMinutes(5)),
+                new AuditLog(null, null, "supervisor@cyforce.com", "ROLE_ASSIGN", "Roles & Permissions", "Assigned sales agent role", "10.0.0.12", LocalDateTime.now().minusMinutes(15)),
+                new AuditLog(null, null, "support@cyforce.com", "TICKET_CREATE", "Ticketing", "Created ticket for billing issue", "10.0.0.8", LocalDateTime.now().minusHours(1))
         ));
 
         articleRepository.saveAll(List.of(
@@ -225,6 +225,8 @@ public class DataSeeder implements ApplicationRunner {
         deal.setCtaLabel("Shop now");
         deal.setCtaLink("/customer/products");
         deal.setActive(true);
+        deal.setStartsAt(LocalDateTime.now());
+        deal.setExpiresAt(LocalDateTime.now().plusDays(7));
         deal.setCreatedByName("CyForce");
         deal.setCreatedAt(LocalDateTime.now());
         deal.setUpdatedAt(LocalDateTime.now());

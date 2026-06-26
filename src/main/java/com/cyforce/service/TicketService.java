@@ -301,6 +301,9 @@ public class TicketService {
     public Ticket assignToMe(String userId, String ticketId) {
         User user = requestUserService.requireUser(userId);
         requestUserService.requireRole(user, "SUPPORT_AGENT", "ADMIN", "SUPERVISOR");
+        if (isAdmin(user)) {
+            throw new RuntimeException("Use ticket takeover instead of self-assignment");
+        }
         Ticket ticket = ticketRepository.findById(ticketId)
                 .orElseThrow(() -> new RuntimeException("Ticket not found"));
         ticket.setAssigneeId(user.getId());
@@ -316,6 +319,9 @@ public class TicketService {
         requestUserService.requireRole(user, "SUPPORT_AGENT", "ADMIN", "SUPERVISOR");
         Ticket ticket = ticketRepository.findById(ticketId)
                 .orElseThrow(() -> new RuntimeException("Ticket not found"));
+        if (isAdmin(user) && !ticket.isAdminTakeover() && !ticket.isSlaEscalated()) {
+            throw new RuntimeException("Take over this ticket before changing its status");
+        }
         ticket.setStatus(status);
         ticket.setUpdatedAt(LocalDateTime.now());
         Ticket saved = ticketRepository.save(ticket);
@@ -339,14 +345,60 @@ public class TicketService {
             }
         } else {
             requestUserService.requireRole(user, "SUPPORT_AGENT", "ADMIN", "SUPERVISOR");
+            enforceAdminReplyPolicy(user, ticket, internalNote);
         }
 
         return saveMessage(user, ticket, message, internalNote);
     }
 
+    public Ticket adminTakeover(String userId, String ticketId) {
+        User admin = requestUserService.requireUser(userId);
+        requestUserService.requireRole(admin, "ADMIN");
+
+        Ticket ticket = ticketRepository.findById(ticketId)
+                .orElseThrow(() -> new RuntimeException("Ticket not found"));
+
+        if (ticket.isTransferredToSales()) {
+            throw new RuntimeException("This ticket has been transferred to sales");
+        }
+        if ("merged".equalsIgnoreCase(ticket.getStatus()) || "closed".equalsIgnoreCase(ticket.getStatus())) {
+            throw new RuntimeException("Cannot take over a closed or merged ticket");
+        }
+        if (ticket.isAdminTakeover()) {
+            return ticket;
+        }
+
+        ticket.setAdminTakeover(true);
+        ticket.setAdminTakeoverAt(LocalDateTime.now());
+        ticket.setAdminTakeoverById(admin.getId());
+        ticket.setAssigneeId(admin.getId());
+        ticket.setAssigneeName(admin.getFullName());
+        ticket.setAssigneeAvatarUrl(resolveAvatar(admin));
+        if ("open".equalsIgnoreCase(ticket.getStatus())) {
+            ticket.setStatus("in_progress");
+        }
+        ticket.setUpdatedAt(LocalDateTime.now());
+        ticketRepository.save(ticket);
+
+        saveMessage(admin, ticket,
+                admin.getFullName() + " (Administrator) has joined this conversation and will assist you.",
+                false);
+
+        if (ticket.getCustomerId() != null) {
+            notificationService.create(ticket.getCustomerId(), "Administrator assigned",
+                    "An administrator is now handling your support request.", "info");
+        }
+
+        auditLogService.log(admin, "TICKET_ADMIN_TAKEOVER", "Ticketing", ticket.getSubject());
+        return ticket;
+    }
+
     public Map<String, Object> transferToSales(String userId, String ticketId, String note) {
         User agent = requestUserService.requireUser(userId);
         requestUserService.requireRole(agent, "SUPPORT_AGENT", "ADMIN", "SUPERVISOR");
+        if (isAdmin(agent)) {
+            throw new RuntimeException("Administrators cannot transfer tickets — support agents handle handoffs");
+        }
 
         Ticket ticket = ticketRepository.findById(ticketId)
                 .orElseThrow(() -> new RuntimeException("Ticket not found"));
@@ -391,6 +443,9 @@ public class TicketService {
     public Ticket transferToAgent(String userId, String ticketId, String targetAgentId, String note) {
         User agent = requestUserService.requireUser(userId);
         requestUserService.requireRole(agent, "SUPPORT_AGENT", "ADMIN", "SUPERVISOR");
+        if (isAdmin(agent)) {
+            throw new RuntimeException("Administrators cannot transfer tickets — support agents handle handoffs");
+        }
 
         if (targetAgentId == null || targetAgentId.isBlank()) {
             throw new RuntimeException("Select an agent to transfer to");
@@ -903,6 +958,20 @@ public class TicketService {
 
     private boolean isCustomer(User user) {
         return "CUSTOMER".equalsIgnoreCase(user.getRole());
+    }
+
+    private boolean isAdmin(User user) {
+        return "ADMIN".equalsIgnoreCase(user.getRole());
+    }
+
+    private void enforceAdminReplyPolicy(User user, Ticket ticket, boolean internalNote) {
+        if (!isAdmin(user) || internalNote) {
+            return;
+        }
+        if (!ticket.isAdminTakeover() && !ticket.isSlaEscalated()) {
+            throw new RuntimeException(
+                    "Administrators can only add internal notes unless this ticket is SLA-escalated or you take it over");
+        }
     }
 
     private AgentPresence pickAvailableSupportAgent() {

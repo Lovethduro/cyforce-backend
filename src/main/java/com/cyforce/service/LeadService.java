@@ -103,9 +103,7 @@ public class LeadService {
             case "products_only" -> {
                 Product product = requireActiveProduct(productId);
                 productName = product.getName();
-                if (quantity < 1) {
-                    throw new RuntimeException("Quantity must be at least 1");
-                }
+                requireQuoteQuantity(quantity);
                 if (deliveryAddress.isBlank()) {
                     throw new RuntimeException("Delivery address is required");
                 }
@@ -113,9 +111,7 @@ public class LeadService {
             case "products_installation" -> {
                 Product product = requireActiveProduct(productId);
                 productName = product.getName();
-                if (quantity < 1) {
-                    throw new RuntimeException("Quantity must be at least 1");
-                }
+                requireQuoteQuantity(quantity);
                 if (installationAddress.isBlank()) {
                     throw new RuntimeException("Installation address is required");
                 }
@@ -206,10 +202,12 @@ public class LeadService {
         }
 
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("message", "Thank you! Check your email for a link to message your sales agent — no account required.");
+        response.put("message", "Thank you! Chat with your sales agent below — we also emailed you a backup link.");
         response.put("leadId", saved.getId());
         response.put("assignedAgent", agent.getFullName());
         response.put("conversationId", conversation.getId());
+        response.put("portalUrl", portalUrl);
+        response.put("portalToken", conversation.getGuestAccessToken());
         return response;
     }
 
@@ -404,15 +402,28 @@ public class LeadService {
         return value == null ? "" : value.toString().trim();
     }
 
+    private static final int MAX_QUOTE_QUANTITY = 999;
+    private static final int MIN_E164_DIGITS = 10;
+    private static final int MAX_E164_DIGITS = 15;
+
     private String requireInternationalPhone(String phone, String errorMessage) {
         String normalized = phone == null ? "" : phone.trim().replace(" ", "");
         if (!normalized.startsWith("+")) {
             throw new RuntimeException(errorMessage);
         }
         long digitCount = normalized.chars().filter(Character::isDigit).count();
-        if (digitCount < 10) {
+        if (digitCount < MIN_E164_DIGITS || digitCount > MAX_E164_DIGITS) {
             throw new RuntimeException(errorMessage);
         }
         return normalized;
+    }
+
+    private void requireQuoteQuantity(int quantity) {
+        if (quantity < 1) {
+            throw new RuntimeException("Quantity must be at least 1");
+        }
+        if (quantity > MAX_QUOTE_QUANTITY) {
+            throw new RuntimeException("Quantity cannot exceed " + MAX_QUOTE_QUANTITY);
+        }
     }
 }

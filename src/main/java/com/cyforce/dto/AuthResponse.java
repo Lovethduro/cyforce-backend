@@ -22,4 +22,6 @@ public class AuthResponse {
     private boolean mfaRequired;
     private String mfaChallengeToken;
     private String mfaMethod;
+    private boolean profileComplete = true;
+    private String sessionId;
 }

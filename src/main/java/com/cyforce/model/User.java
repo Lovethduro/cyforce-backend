@@ -81,6 +81,10 @@ public class User {
 
     private boolean mustChangePassword = false;
 
+    /** False for new OAuth customer sign-ups until phone and customer details are provided. */
+    private boolean profileComplete = true;
+
+    @Indexed
     private String passwordResetToken;
 
     private LocalDateTime passwordResetTokenExpiry;

@@ -5,6 +5,8 @@ import com.cyforce.dto.UserListItemResponse;
 import com.cyforce.dto.UserProfileResponse;
 import com.cyforce.service.MfaService;
 import com.cyforce.service.UserService;
+import com.cyforce.util.WebRequestUtils;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.MediaType;
@@ -70,9 +72,10 @@ public class UserController {
 
     @PostMapping("/me/mfa/disable")
     public ResponseEntity<?> disableMfa(@RequestHeader("X-User-Id") String userId,
-                                        @RequestBody Map<String, String> body) {
+                                        @RequestBody Map<String, String> body,
+                                        HttpServletRequest request) {
         try {
-            mfaService.disableMfa(userId, body.get("password"));
+            mfaService.disableMfa(userId, body.get("password"), WebRequestUtils.clientIp(request));
             return ResponseEntity.ok(Map.of("message", "MFA disabled successfully"));
         } catch (RuntimeException e) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("error", e.getMessage()));

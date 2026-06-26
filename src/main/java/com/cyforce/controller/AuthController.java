@@ -12,6 +12,8 @@ import com.cyforce.service.MfaService;
 import com.cyforce.service.ReferralService;
 import com.cyforce.service.UserService;
 import com.cyforce.repository.UserRepository;
+import com.cyforce.util.WebRequestUtils;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -52,12 +54,14 @@ public class AuthController {
     }
 
     @PostMapping("/login")
-    public ResponseEntity<?> login(@RequestBody LoginRequest request) {
+    public ResponseEntity<?> login(@RequestBody LoginRequest request, HttpServletRequest httpRequest) {
         try {
             AuthResponse response = authService.login(
                     request.getEmail(),
                     request.getPassword(),
-                    request.getRole()
+                    request.getRole(),
+                    WebRequestUtils.clientIp(httpRequest),
+                    httpRequest.getHeader("User-Agent")
             );
             return ResponseEntity.ok(response);
         } catch (RuntimeException e) {
@@ -67,18 +71,42 @@ public class AuthController {
     }
 
     @PostMapping("/oauth/google")
-    public ResponseEntity<?> googleLogin(@RequestBody OAuthLoginRequest request) {
+    public ResponseEntity<?> googleLogin(@RequestBody OAuthLoginRequest request, HttpServletRequest httpRequest) {
         try {
-            return ResponseEntity.ok(authService.googleLogin(request.getToken(), request.getRole()));
+            return ResponseEntity.ok(authService.googleLogin(
+                    request.getToken(),
+                    request.getRole(),
+                    WebRequestUtils.clientIp(httpRequest),
+                    httpRequest.getHeader("User-Agent")
+            ));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
     }
 
     @PostMapping("/oauth/microsoft")
-    public ResponseEntity<?> microsoftLogin(@RequestBody OAuthLoginRequest request) {
+    public ResponseEntity<?> microsoftLogin(@RequestBody OAuthLoginRequest request, HttpServletRequest httpRequest) {
         try {
-            return ResponseEntity.ok(authService.microsoftLogin(request.getToken(), request.getRole()));
+            return ResponseEntity.ok(authService.microsoftLogin(
+                    request.getToken(),
+                    request.getRole(),
+                    WebRequestUtils.clientIp(httpRequest),
+                    httpRequest.getHeader("User-Agent")
+            ));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/complete-profile")
+    public ResponseEntity<?> completeProfile(
+            @RequestHeader(value = "X-User-Id", required = false) String userId,
+            @RequestBody Map<String, Object> body) {
+        if (userId == null || userId.isBlank()) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Not authenticated"));
+        }
+        try {
+            return ResponseEntity.ok(authService.completeProfile(userId, body));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
@@ -166,9 +194,14 @@ public class AuthController {
     }
 
     @PostMapping("/mfa/setup/verify")
-    public ResponseEntity<?> verifyMfaSetup(@RequestBody MfaSetupVerifyRequest request) {
+    public ResponseEntity<?> verifyMfaSetup(@RequestBody MfaSetupVerifyRequest request, HttpServletRequest httpRequest) {
         try {
-            mfaService.verifySetup(request.getUserId(), request.getCode(), request.getSecret());
+            mfaService.verifySetup(
+                    request.getUserId(),
+                    request.getCode(),
+                    request.getSecret(),
+                    WebRequestUtils.clientIp(httpRequest)
+            );
             return ResponseEntity.ok(Map.of("message", "MFA enabled successfully"));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
@@ -186,11 +219,13 @@ public class AuthController {
     }
 
     @PostMapping("/mfa/login/verify")
-    public ResponseEntity<?> verifyMfaLogin(@RequestBody Map<String, String> request) {
+    public ResponseEntity<?> verifyMfaLogin(@RequestBody Map<String, String> request, HttpServletRequest httpRequest) {
         try {
             AuthResponse response = authService.verifyMfaLogin(
                     request.get("challengeToken"),
-                    request.get("code")
+                    request.get("code"),
+                    WebRequestUtils.clientIp(httpRequest),
+                    httpRequest.getHeader("User-Agent")
             );
             return ResponseEntity.ok(response);
         } catch (RuntimeException e) {
@@ -209,16 +244,16 @@ public class AuthController {
     }
 
     @PostMapping("/forgot-password")
-    public ResponseEntity<?> forgotPassword(@RequestBody Map<String, String> request) {
+    public ResponseEntity<?> forgotPassword(@RequestBody Map<String, String> request, HttpServletRequest httpRequest) {
         String email = request.get("email");
         if (email == null || email.isBlank()) {
             return ResponseEntity.badRequest().body(Map.of("error", "Email is required"));
         }
-        return ResponseEntity.ok(authService.forgotPassword(email));
+        return ResponseEntity.ok(authService.forgotPassword(email, WebRequestUtils.clientIp(httpRequest)));
     }
 
     @PostMapping("/reset-password")
-    public ResponseEntity<?> resetPassword(@RequestBody Map<String, String> request) {
+    public ResponseEntity<?> resetPassword(@RequestBody Map<String, String> request, HttpServletRequest httpRequest) {
         try {
             String token = request.get("token");
             String password = request.get("password");
@@ -231,7 +266,7 @@ public class AuthController {
             if (password == null || password.isBlank()) {
                 return ResponseEntity.badRequest().body(Map.of("error", "New password is required"));
             }
-            authService.resetPassword(token, password);
+            authService.resetPassword(token, password, WebRequestUtils.clientIp(httpRequest));
             return ResponseEntity.ok(Map.of("message", "Password updated successfully. You can sign in now."));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
@@ -241,13 +276,36 @@ public class AuthController {
     @PostMapping("/change-password")
     public ResponseEntity<?> changePassword(
             @RequestHeader(value = "X-User-Id", required = false) String userId,
-            @RequestBody Map<String, String> request) {
+            @RequestBody Map<String, String> request,
+            HttpServletRequest httpRequest) {
         if (userId == null || userId.isBlank()) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("error", "Not authenticated"));
         }
         try {
-            authService.changePassword(userId, request.get("currentPassword"), request.get("newPassword"));
+            authService.changePassword(
+                    userId,
+                    request.get("currentPassword"),
+                    request.get("newPassword"),
+                    WebRequestUtils.clientIp(httpRequest)
+            );
             return ResponseEntity.ok(Map.of("message", "Password changed successfully"));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/logout")
+    public ResponseEntity<?> logout(
+            @RequestHeader(value = "X-User-Id", required = false) String userId,
+            @RequestBody(required = false) Map<String, String> body,
+            HttpServletRequest httpRequest) {
+        if (userId == null || userId.isBlank()) {
+            return ResponseEntity.ok(Map.of("message", "Signed out"));
+        }
+        try {
+            String sessionId = body == null ? null : body.get("sessionId");
+            authService.logout(userId, sessionId, WebRequestUtils.clientIp(httpRequest));
+            return ResponseEntity.ok(Map.of("message", "Signed out"));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
