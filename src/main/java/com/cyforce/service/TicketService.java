@@ -96,7 +96,6 @@ public class TicketService {
     public List<Ticket> allOpenTickets(String userId) {
         User user = requestUserService.requireUser(userId);
         requestUserService.requireRole(user, "SUPPORT_AGENT", "ADMIN", "SUPERVISOR");
-        processSlaEscalations();
         return ticketRepository.findByStatusInOrderByCreatedAtDesc(List.of("open", "in_progress"));
     }
 
@@ -140,7 +139,7 @@ public class TicketService {
         Ticket saved = ticketRepository.save(ticket);
         auditLogService.log(user, "TICKET_CREATE", "Ticketing", saved.getSubject());
 
-        notificationService.create(user.getId(), "Ticket created",
+        notificationService.createOnce(user.getId(), saved.getId() + ":created", "Ticket created",
                 "Your support ticket \"" + saved.getSubject() + "\" has been submitted.", "info");
 
         if (autoAssignee != null && autoAssignee.getUserId() != null) {
@@ -326,7 +325,7 @@ public class TicketService {
         ticket.setUpdatedAt(LocalDateTime.now());
         Ticket saved = ticketRepository.save(ticket);
         if (ticket.getCustomerId() != null) {
-            notificationService.create(ticket.getCustomerId(), "Ticket updated",
+            notificationService.createOnce(ticket.getCustomerId(), ticket.getId() + ":status:" + status, "Ticket updated",
                     "Your ticket \"" + ticket.getSubject() + "\" is now " + status, "info");
         }
         return saved;

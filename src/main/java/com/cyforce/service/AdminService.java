@@ -201,19 +201,19 @@ public class AdminService {
     }
 
     public AdminDashboardOverviewResponse adminOverview(String userId) {
-        DashboardStatsResponse stats = dashboardStats(userId);
+        requestUserService.requireRole(requestUserService.requireUser(userId), "ADMIN", "SUPERVISOR");
         List<User> users = userRepository.findAll();
-        List<Ticket> tickets = allTickets(userId);
-        List<Lead> leads = allLeads(userId);
+        DashboardStatsResponse stats = userService.buildDashboardStats(users);
         List<AuditLog> logs = auditLogService.recent();
 
-        long openTickets = tickets.stream()
-                .filter(t -> "open".equals(t.getStatus()) || "in_progress".equals(t.getStatus()))
-                .count();
+        long openTickets = ticketRepository.countByStatusIn(List.of("open", "in_progress"));
+        long totalLeads = leadRepository.count();
 
         long activeSessions = userSessionService.countActiveSessions();
 
         List<AdminDashboardOverviewResponse.AnomalyAlertItem> anomalyAlerts = buildAnomalyAlerts(userId);
+
+        var metrics = systemMetricsService.getDashboardMetricsBundle();
 
         List<UserListItemResponse> pendingUsers = users.stream()
                 .filter(UserService::isPendingAccountApproval)
@@ -225,17 +225,17 @@ public class AdminService {
         return new AdminDashboardOverviewResponse(
                 stats,
                 openTickets,
-                leads.size(),
+                totalLeads,
                 activeSessions,
                 anomalyAlerts.size(),
-                systemMetricsService.storageUsagePercent(),
+                metrics.storageUsagePercent(),
                 computeUserGrowthPercent(users),
                 buildRegistrationActivity(users),
                 pendingUsers,
                 buildRecentActivity(logs),
                 anomalyAlerts,
-                systemMetricsService.storageBreakdown(),
-                systemMetricsService.systemHealth(),
+                metrics.storageBreakdown(),
+                metrics.systemHealth(),
                 logs.stream().limit(10).toList()
         );
     }

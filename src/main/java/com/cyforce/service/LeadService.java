@@ -1,18 +1,15 @@
 package com.cyforce.service;
 
-import com.cyforce.model.AgentPresence;
 import com.cyforce.model.Conversation;
 import com.cyforce.model.Lead;
 import com.cyforce.model.Product;
 import com.cyforce.model.User;
-import com.cyforce.repository.AgentPresenceRepository;
 import com.cyforce.repository.LeadRepository;
 import com.cyforce.repository.ProductRepository;
 import com.cyforce.repository.UserRepository;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -31,30 +28,30 @@ public class LeadService {
     private final RequestUserService requestUserService;
     private final AuditLogService auditLogService;
     private final UserRepository userRepository;
-    private final AgentPresenceRepository agentPresenceRepository;
     private final NotificationService notificationService;
     private final ProductRepository productRepository;
     private final MessagingService messagingService;
     private final EmailService emailService;
+    private final SalesAgentLoadService salesAgentLoadService;
 
     public LeadService(LeadRepository leadRepository,
                        RequestUserService requestUserService,
                        AuditLogService auditLogService,
                        UserRepository userRepository,
-                       AgentPresenceRepository agentPresenceRepository,
                        NotificationService notificationService,
                        ProductRepository productRepository,
                        MessagingService messagingService,
-                       EmailService emailService) {
+                       EmailService emailService,
+                       SalesAgentLoadService salesAgentLoadService) {
         this.leadRepository = leadRepository;
         this.requestUserService = requestUserService;
         this.auditLogService = auditLogService;
         this.userRepository = userRepository;
-        this.agentPresenceRepository = agentPresenceRepository;
         this.notificationService = notificationService;
         this.productRepository = productRepository;
         this.messagingService = messagingService;
         this.emailService = emailService;
+        this.salesAgentLoadService = salesAgentLoadService;
     }
 
     public List<Lead> myLeads(String userId) {
@@ -150,7 +147,7 @@ public class LeadService {
             default -> throw new RuntimeException("Invalid quote type");
         }
 
-        User agent = pickAvailableSalesAgent();
+        User agent = salesAgentLoadService.pickAvailableSalesAgentForQuotes();
         Lead lead = new Lead();
         lead.setName(name.trim());
         lead.setEmail(email.trim());
@@ -270,8 +267,14 @@ public class LeadService {
         lead.setSource((String) body.getOrDefault("source", "website"));
         lead.setStatus("new");
         lead.setScore(body.get("score") instanceof Number ? ((Number) body.get("score")).intValue() : 50);
-        lead.setOwnerId(user.getId());
-        lead.setOwnerName(user.getFullName());
+        if ("SALES_AGENT".equalsIgnoreCase(user.getRole())) {
+            lead.setOwnerId(user.getId());
+            lead.setOwnerName(user.getFullName());
+        } else {
+            User agent = salesAgentLoadService.pickLightestLoadAgent();
+            lead.setOwnerId(agent.getId());
+            lead.setOwnerName(agent.getFullName());
+        }
         lead.setCreatedAt(LocalDateTime.now());
         lead.setUpdatedAt(LocalDateTime.now());
         Lead saved = leadRepository.save(lead);
@@ -308,37 +311,6 @@ public class LeadService {
         long qualified = leads.stream().filter(l -> "qualified".equals(l.getStatus())).count();
         long converted = leads.stream().filter(l -> "converted".equals(l.getStatus())).count();
         return Map.of("totalLeads", leads.size(), "qualifiedLeads", qualified, "convertedLeads", converted);
-    }
-
-    private User pickAvailableSalesAgent() {
-        List<AgentPresence> availableSales = agentPresenceRepository.findByTeam("sales").stream()
-                .filter(p -> "available".equalsIgnoreCase(p.getStatus()))
-                .sorted(Comparator.comparing(AgentPresence::getUpdatedAt, Comparator.nullsLast(Comparator.naturalOrder())))
-                .toList();
-
-        for (AgentPresence presence : availableSales) {
-            User agent = userRepository.findById(presence.getUserId()).orElse(null);
-            if (agent != null && agent.isActive() && "SALES_AGENT".equalsIgnoreCase(agent.getRole())) {
-                return agent;
-            }
-        }
-
-        List<User> agents = userRepository.findAll().stream()
-                .filter(u -> "SALES_AGENT".equalsIgnoreCase(u.getRole()) && u.isActive())
-                .toList();
-        if (agents.isEmpty()) {
-            throw new RuntimeException("No sales agents are available right now. Please try again later.");
-        }
-
-        return agents.stream()
-                .min(Comparator.comparingLong(this::openLeadCount))
-                .orElse(agents.get(0));
-    }
-
-    private long openLeadCount(User agent) {
-        return leadRepository.findByOwnerIdOrderByCreatedAtDesc(agent.getId()).stream()
-                .filter(l -> !"converted".equalsIgnoreCase(l.getStatus()) && !"lost".equalsIgnoreCase(l.getStatus()))
-                .count();
     }
 
     private String formatQuoteType(String quoteType) {

@@ -25,6 +25,8 @@ import java.util.Set;
 @Service
 public class SystemMetricsService {
 
+    private static final long CACHE_TTL_MS = 120_000;
+
     private static final Map<String, List<String>> STORAGE_GROUPS = new LinkedHashMap<>() {{
         put("Users & accounts", List.of("users"));
         put("Tickets & support", List.of("tickets", "ticket_messages", "ticket_feedback"));
@@ -53,6 +55,11 @@ public class SystemMetricsService {
     private final ApplicationUptime applicationUptime;
     private final Path uploadsRoot;
 
+    private final Object cacheLock = new Object();
+    private long cacheExpiryAt;
+    private Document cachedDbStats;
+    private DashboardMetricsCache dashboardMetricsCache;
+
     public SystemMetricsService(MongoTemplate mongoTemplate,
                                 JavaMailSender mailSender,
                                 UserRepository userRepository,
@@ -66,16 +73,7 @@ public class SystemMetricsService {
     }
 
     public int storageUsagePercent() {
-        Document stats = dbStats();
-        if (stats == null) {
-            return 0;
-        }
-        long dataSize = number(stats.get("dataSize"));
-        long storageSize = number(stats.get("storageSize"));
-        if (storageSize <= 0) {
-            return dataSize > 0 ? 1 : 0;
-        }
-        return (int) Math.min(100, Math.round((dataSize * 100.0) / storageSize));
+        return getDashboardMetrics().storageUsagePercent();
     }
 
     public long databaseTotalBytes() {
@@ -104,6 +102,52 @@ public class SystemMetricsService {
     }
 
     public List<AdminDashboardOverviewResponse.StorageSliceItem> storageBreakdown() {
+        return getDashboardMetrics().storageBreakdown();
+    }
+
+    public List<AdminDashboardOverviewResponse.SystemHealthItem> systemHealth() {
+        return getDashboardMetrics().systemHealth();
+    }
+
+    public DashboardMetricsCache getDashboardMetricsBundle() {
+        return getDashboardMetrics();
+    }
+
+    private DashboardMetricsCache getDashboardMetrics() {
+        long now = System.currentTimeMillis();
+        DashboardMetricsCache cached = dashboardMetricsCache;
+        if (cached != null && now < cacheExpiryAt) {
+            return cached;
+        }
+        synchronized (cacheLock) {
+            cached = dashboardMetricsCache;
+            if (cached != null && now < cacheExpiryAt) {
+                return cached;
+            }
+            cachedDbStats = dbStats();
+            int usagePercent = computeStorageUsagePercent(cachedDbStats);
+            List<AdminDashboardOverviewResponse.StorageSliceItem> breakdown = computeStorageBreakdown();
+            List<AdminDashboardOverviewResponse.SystemHealthItem> health = computeSystemHealth();
+            cached = new DashboardMetricsCache(usagePercent, breakdown, health);
+            dashboardMetricsCache = cached;
+            cacheExpiryAt = System.currentTimeMillis() + CACHE_TTL_MS;
+            return cached;
+        }
+    }
+
+    private int computeStorageUsagePercent(Document stats) {
+        if (stats == null) {
+            return 0;
+        }
+        long dataSize = number(stats.get("dataSize"));
+        long storageSize = number(stats.get("storageSize"));
+        if (storageSize <= 0) {
+            return dataSize > 0 ? 1 : 0;
+        }
+        return (int) Math.min(100, Math.round((dataSize * 100.0) / storageSize));
+    }
+
+    private List<AdminDashboardOverviewResponse.StorageSliceItem> computeStorageBreakdown() {
         Set<String> existingCollections = mongoTemplate.getDb().listCollectionNames().into(new java.util.HashSet<>());
         List<GroupMetrics> groups = new ArrayList<>();
 
@@ -152,7 +196,7 @@ public class SystemMetricsService {
         return slices;
     }
 
-    public List<AdminDashboardOverviewResponse.SystemHealthItem> systemHealth() {
+    private List<AdminDashboardOverviewResponse.SystemHealthItem> computeSystemHealth() {
         List<AdminDashboardOverviewResponse.SystemHealthItem> items = new ArrayList<>();
 
         items.add(new AdminDashboardOverviewResponse.SystemHealthItem(
@@ -175,7 +219,7 @@ public class SystemMetricsService {
                 email.detail()
         ));
 
-        HealthCheck storage = checkStorage();
+        HealthCheck storage = checkStorage(cachedDbStats);
         items.add(new AdminDashboardOverviewResponse.SystemHealthItem(
                 "Storage",
                 storage.status(),
@@ -197,7 +241,7 @@ public class SystemMetricsService {
         try {
             Document result = mongoTemplate.getDb().runCommand(new Document("ping", 1));
             long ms = System.currentTimeMillis() - start;
-            boolean ok = result != null && "1.0".equals(String.valueOf(result.get("ok")));
+            boolean ok = result != null && isCommandOk(result.get("ok"));
             if (ok) {
                 return new HealthCheck("online", "Connected · " + ms + "ms");
             }
@@ -207,9 +251,22 @@ public class SystemMetricsService {
         }
     }
 
-    private HealthCheck checkStorage() {
+    private boolean isCommandOk(Object ok) {
+        if (ok instanceof Number number) {
+            return number.doubleValue() == 1.0;
+        }
+        if (ok instanceof Boolean bool) {
+            return bool;
+        }
+        if (ok == null) {
+            return false;
+        }
+        String text = String.valueOf(ok);
+        return "1".equals(text) || "1.0".equals(text);
+    }
+
+    private HealthCheck checkStorage(Document stats) {
         try {
-            Document stats = dbStats();
             if (stats == null) {
                 return new HealthCheck("offline", "Stats unavailable");
             }
@@ -249,6 +306,12 @@ public class SystemMetricsService {
     private Document dbStats() {
         return mongoTemplate.getDb().runCommand(new Document("dbStats", 1));
     }
+
+    public record DashboardMetricsCache(
+            int storageUsagePercent,
+            List<AdminDashboardOverviewResponse.StorageSliceItem> storageBreakdown,
+            List<AdminDashboardOverviewResponse.SystemHealthItem> systemHealth
+    ) {}
 
     private CollectionStats collectionStats(String collection) {
         try {

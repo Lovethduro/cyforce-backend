@@ -2,31 +2,48 @@ package com.cyforce.service;
 
 import com.cyforce.model.Notification;
 import com.cyforce.model.User;
+import com.cyforce.repository.InvoiceRepository;
 import com.cyforce.repository.NotificationRepository;
 import com.cyforce.repository.UserRepository;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 @Service
 public class NotificationService {
 
     private final NotificationRepository notificationRepository;
+    private final InvoiceRepository invoiceRepository;
     private final RequestUserService requestUserService;
     private final UserRepository userRepository;
 
     public NotificationService(NotificationRepository notificationRepository,
+                               InvoiceRepository invoiceRepository,
                                RequestUserService requestUserService,
                                UserRepository userRepository) {
         this.notificationRepository = notificationRepository;
+        this.invoiceRepository = invoiceRepository;
         this.requestUserService = requestUserService;
         this.userRepository = userRepository;
     }
 
     public List<Notification> listForUser(String userId) {
         requestUserService.requireUser(userId);
-        return notificationRepository.findByUserIdOrderByCreatedAtDesc(userId);
+        List<Notification> notifications = notificationRepository.findByUserIdOrderByCreatedAtDesc(userId);
+        for (Notification notification : notifications) {
+            clearSurveyTokenIfCompleted(notification);
+        }
+        return notifications;
+    }
+
+    public void clearPurchaseSurveyPrompt(String userId, String invoiceId) {
+        if (userId == null || userId.isBlank() || invoiceId == null || invoiceId.isBlank()) {
+            return;
+        }
+        notificationRepository.findByUserIdAndReferenceId(userId, invoiceId + ":purchase")
+                .ifPresent(this::clearSurveyTokenIfPresent);
     }
 
     public long unreadCount(String userId) {
@@ -52,6 +69,11 @@ public class NotificationService {
     public void delete(String userId, String notificationId) {
         Notification notification = getOwnedNotification(userId, notificationId);
         notificationRepository.delete(notification);
+    }
+
+    public void deleteAll(String userId) {
+        requestUserService.requireUser(userId);
+        notificationRepository.deleteByUserId(userId);
     }
 
     public int broadcastToAll(String title, String message) {
@@ -85,14 +107,65 @@ public class NotificationService {
     }
 
     public Notification create(String userId, String title, String message, String type) {
+        return create(userId, title, message, type, null, null);
+    }
+
+    public Notification createOnce(String userId, String referenceId, String title, String message, String type) {
+        return create(userId, title, message, type, referenceId, null);
+    }
+
+    public Notification createOnce(String userId,
+                                   String referenceId,
+                                   String title,
+                                   String message,
+                                   String type,
+                                   String surveyToken) {
+        return create(userId, title, message, type, referenceId, surveyToken);
+    }
+
+    private Notification create(String userId,
+                              String title,
+                              String message,
+                              String type,
+                              String referenceId,
+                              String surveyToken) {
+        if (referenceId != null && !referenceId.isBlank()) {
+            Optional<Notification> existing = notificationRepository.findByUserIdAndReferenceId(userId, referenceId);
+            if (existing.isPresent()) {
+                return existing.get();
+            }
+        }
+
         Notification notification = new Notification();
         notification.setUserId(userId);
         notification.setTitle(title);
         notification.setMessage(message);
         notification.setType(type == null ? "info" : type);
+        notification.setReferenceId(referenceId);
+        notification.setSurveyToken(surveyToken);
         notification.setRead(false);
         notification.setCreatedAt(LocalDateTime.now());
         return notificationRepository.save(notification);
+    }
+
+    private void clearSurveyTokenIfCompleted(Notification notification) {
+        String surveyToken = notification.getSurveyToken();
+        if (surveyToken == null || surveyToken.isBlank()) {
+            return;
+        }
+        invoiceRepository.findBySurveyToken(surveyToken).ifPresent(invoice -> {
+            if (invoice.isSurveyCompleted()) {
+                clearSurveyTokenIfPresent(notification);
+            }
+        });
+    }
+
+    private void clearSurveyTokenIfPresent(Notification notification) {
+        if (notification.getSurveyToken() == null) {
+            return;
+        }
+        notification.setSurveyToken(null);
+        notificationRepository.save(notification);
     }
 
     private Notification getOwnedNotification(String userId, String notificationId) {

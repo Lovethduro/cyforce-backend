@@ -46,6 +46,16 @@ public class NotificationController {
         return ResponseEntity.ok(Map.of("message", "All notifications marked as read"));
     }
 
+    @DeleteMapping
+    public ResponseEntity<?> deleteAll(@RequestHeader("X-User-Id") String userId) {
+        try {
+            notificationService.deleteAll(userId);
+            return ResponseEntity.ok(Map.of("message", "All notifications deleted"));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
     @DeleteMapping("/{id}")
     public ResponseEntity<?> delete(@RequestHeader("X-User-Id") String userId, @PathVariable String id) {
         try {

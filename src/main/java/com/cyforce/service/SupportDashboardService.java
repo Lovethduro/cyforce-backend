@@ -24,7 +24,6 @@ public class SupportDashboardService {
     private final UserRepository userRepository;
     private final TicketMetricsService metricsService;
     private final AuditLogRepository auditLogRepository;
-    private final TicketService ticketService;
 
     public SupportDashboardService(RequestUserService requestUserService,
                                    TicketRepository ticketRepository,
@@ -34,8 +33,7 @@ public class SupportDashboardService {
                                    AgentPresenceRepository presenceRepository,
                                    UserRepository userRepository,
                                    TicketMetricsService metricsService,
-                                   AuditLogRepository auditLogRepository,
-                                   TicketService ticketService) {
+                                   AuditLogRepository auditLogRepository) {
         this.requestUserService = requestUserService;
         this.ticketRepository = ticketRepository;
         this.messageRepository = messageRepository;
@@ -45,7 +43,6 @@ public class SupportDashboardService {
         this.userRepository = userRepository;
         this.metricsService = metricsService;
         this.auditLogRepository = auditLogRepository;
-        this.ticketService = ticketService;
     }
 
     public SupportDashboardOverviewResponse overview(String userId) {
@@ -54,12 +51,6 @@ public class SupportDashboardService {
 
         List<Ticket> myTickets = ticketRepository.findByAssigneeIdOrderByCreatedAtDesc(agent.getId());
         List<Ticket> openMine = myTickets.stream()
-                .filter(t -> "open".equals(t.getStatus()) || "in_progress".equals(t.getStatus()))
-                .toList();
-
-        ticketService.processSlaEscalations();
-        myTickets = ticketRepository.findByAssigneeIdOrderByCreatedAtDesc(agent.getId());
-        openMine = myTickets.stream()
                 .filter(t -> "open".equals(t.getStatus()) || "in_progress".equals(t.getStatus()))
                 .toList();
 
@@ -230,10 +221,7 @@ public class SupportDashboardService {
     private List<SupportDashboardOverviewResponse.ActivityItem> buildActivity(String userId) {
         List<SupportDashboardOverviewResponse.ActivityItem> items = new ArrayList<>();
 
-        messageRepository.findAll().stream()
-                .filter(m -> userId.equals(m.getAuthorId()))
-                .sorted(Comparator.comparing(TicketMessage::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
-                .limit(5)
+        messageRepository.findTop5ByAuthorIdOrderByCreatedAtDesc(userId)
                 .forEach(m -> items.add(new SupportDashboardOverviewResponse.ActivityItem(
                         "reply", "Replied to ticket", metricsService.formatRelative(m.getCreatedAt()))));
 

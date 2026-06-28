@@ -1,5 +1,6 @@
 package com.cyforce.controller;
 
+import com.cyforce.model.PaymentTransaction;
 import com.cyforce.service.PaymentService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -40,7 +41,8 @@ public class PaymentController {
     @GetMapping("/paystack/verify/{reference}")
     public ResponseEntity<?> verifyPaystack(@PathVariable String reference) {
         try {
-            return ResponseEntity.ok(paymentService.verifyPaystack(reference));
+            PaymentTransaction tx = paymentService.verifyPaystack(reference);
+            return ResponseEntity.ok(paymentService.paymentResult(tx));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
@@ -49,7 +51,8 @@ public class PaymentController {
     @GetMapping("/flutterwave/verify/{reference}")
     public ResponseEntity<?> verifyFlutterwave(@PathVariable String reference) {
         try {
-            return ResponseEntity.ok(paymentService.verifyFlutterwave(reference));
+            PaymentTransaction tx = paymentService.verifyFlutterwave(reference);
+            return ResponseEntity.ok(paymentService.paymentResult(tx));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
@@ -70,7 +73,7 @@ public class PaymentController {
     @PostMapping("/complete-local/{reference}")
     public ResponseEntity<?> completeLocal(@PathVariable String reference) {
         try {
-            return ResponseEntity.ok(paymentService.completePayment(reference));
+            return ResponseEntity.ok(paymentService.completePaymentWithDetails(reference));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

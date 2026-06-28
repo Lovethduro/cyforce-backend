@@ -4,6 +4,8 @@ import com.cyforce.service.LeadService;
 import com.cyforce.service.MessagingService;
 import com.cyforce.service.SalesDashboardService;
 import com.cyforce.service.SalesPlaybookService;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -76,6 +78,23 @@ public class SalesController {
                                             @RequestBody Map<String, String> body) {
         try {
             return ResponseEntity.ok(salesDashboardService.createCustomer(userId, body));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/customers/report")
+    public ResponseEntity<?> customersReport(@RequestHeader("X-User-Id") String userId,
+                                             @RequestParam(defaultValue = "csv") String format) {
+        try {
+            byte[] report = salesDashboardService.customersReport(userId, format);
+            String normalized = format == null ? "csv" : format.trim().toLowerCase();
+            boolean pdf = "pdf".equals(normalized);
+            String filename = "customers-" + java.time.LocalDate.now() + (pdf ? ".pdf" : ".csv");
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                    .contentType(pdf ? MediaType.APPLICATION_PDF : MediaType.parseMediaType("text/csv"))
+                    .body(report);
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

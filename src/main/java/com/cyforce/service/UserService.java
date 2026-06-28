@@ -220,8 +220,10 @@ public class UserService {
     public DashboardStatsResponse getDashboardStats(String requesterId) {
         User requester = requireUser(requesterId);
         requireStaff(requester);
+        return buildDashboardStats(userRepository.findAll());
+    }
 
-        List<User> users = userRepository.findAll();
+    public DashboardStatsResponse buildDashboardStats(List<User> users) {
         long totalUsers = users.size();
         long activeUsers = users.stream().filter(User::isActive).count();
         long pendingApprovals = users.stream().filter(UserService::isPendingAccountApproval).count();

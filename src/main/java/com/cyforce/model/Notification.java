@@ -20,5 +20,9 @@ public class Notification {
     private String message;
     private String type;
     private boolean read;
+    /** Dedupes notifications for the same event (e.g. invoiceId:purchase). */
+    private String referenceId;
+    /** When set, the client can show an inline purchase survey instead of a link. */
+    private String surveyToken;
     private LocalDateTime createdAt;
 }

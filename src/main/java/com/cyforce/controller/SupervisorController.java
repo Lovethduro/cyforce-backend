@@ -95,6 +95,16 @@ public class SupervisorController {
         }
     }
 
+    @GetMapping("/leads/{leadId}/assign/preview")
+    public ResponseEntity<?> previewLeadAssignment(@RequestHeader("X-User-Id") String userId,
+                                                   @PathVariable String leadId) {
+        try {
+            return ResponseEntity.ok(supervisorOpsService.previewLeadAssignment(userId, leadId));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
     @PostMapping("/leads/{leadId}/assign")
     public ResponseEntity<?> assignLead(@RequestHeader("X-User-Id") String userId,
                                         @PathVariable String leadId,

@@ -148,8 +148,16 @@ public class PaymentService {
         result.put("staffDiscountPercent", discount.percent());
         result.put("staffDiscountKobo", Math.max(0, originalTotalKobo - totalKobo));
 
-        notificationService.create(user.getId(), "Checkout started",
-                "Your order of ₦" + String.format("%,d", totalKobo / 100) + " is being processed.", "info");
+        boolean willAutoComplete = Boolean.TRUE.equals(payment.get("autoComplete"));
+        if (!willAutoComplete) {
+            notificationService.createOnce(
+                    user.getId(),
+                    savedInvoice.getId() + ":checkout",
+                    "Checkout started",
+                    "Your order of ₦" + String.format("%,d", totalKobo / 100) + " is being processed.",
+                    "info"
+            );
+        }
 
         return result;
     }
@@ -435,6 +443,11 @@ public class PaymentService {
         }
     }
 
+    public Map<String, Object> completePaymentWithDetails(String reference) {
+        PaymentTransaction tx = completePayment(reference);
+        return paymentResult(tx);
+    }
+
     public PaymentTransaction completePayment(String reference) {
         PaymentTransaction tx = transactionRepository.findByReference(reference)
                 .orElseThrow(() -> new RuntimeException("Transaction not found"));
@@ -523,6 +536,7 @@ public class PaymentService {
         String invoiceId = tx.getMetadata() != null ? stringVal(tx.getMetadata().get("invoiceId"), null) : null;
         if (invoiceId != null && !invoiceId.isBlank()) {
             invoiceRepository.findById(invoiceId).ifPresent(inv -> {
+                boolean wasAlreadyPaid = "paid".equalsIgnoreCase(inv.getStatus());
                 inv.setStatus("paid");
                 inv.setPaidAt(LocalDateTime.now());
                 inv.setPaymentTransactionId(saved.getId());
@@ -531,34 +545,51 @@ public class PaymentService {
                 }
                 invoiceRepository.save(inv);
 
-                String amountText = inv.getAmount() > 0
-                        ? "₦" + String.format("%,d", inv.getAmount() / 100)
-                        : "";
-                String surveyUrl = "http://localhost:3000/survey/purchase/" + inv.getSurveyToken();
+                if (!wasAlreadyPaid) {
+                    String amountText = inv.getAmount() > 0
+                            ? "₦" + String.format("%,d", inv.getAmount() / 100)
+                            : "";
 
-                if (tx.getUserId() != null) {
-                    userRepository.findById(tx.getUserId()).ifPresent(user -> {
-                        if (user.getEmail() != null && !user.getEmail().isBlank()) {
-                            try {
-                                emailService.sendPurchaseConfirmationEmail(
-                                        user.getEmail(),
-                                        user.getFullName(),
-                                        amountText.isBlank() ? "your order" : amountText,
-                                        inv.getDescription(),
-                                        surveyUrl
-                                );
-                            } catch (RuntimeException e) {
-                                log.warn("Purchase confirmation email failed: {}", e.getMessage());
+                    if (tx.getUserId() != null) {
+                        userRepository.findById(tx.getUserId()).ifPresent(user -> {
+                            if (user.getEmail() != null && !user.getEmail().isBlank()) {
+                                try {
+                                    String surveyUrl = properties.getCallbackBaseUrl()
+                                            + "/survey/purchase/" + inv.getSurveyToken();
+                                    emailService.sendPurchaseConfirmationEmail(
+                                            user.getEmail(),
+                                            user.getFullName(),
+                                            amountText.isBlank() ? "your order" : amountText,
+                                            inv.getDescription(),
+                                            surveyUrl
+                                    );
+                                } catch (RuntimeException e) {
+                                    log.warn("Purchase confirmation email failed: {}", e.getMessage());
+                                }
                             }
-                        }
-                    });
-                }
+                        });
+                    }
 
-                if (tx.getUserId() != null) {
-                    notificationService.create(tx.getUserId(), "Purchase confirmed",
-                            "Payment successful" + (amountText.isBlank() ? "" : " — " + amountText)
-                                    + ". Please rate your experience: " + surveyUrl,
-                            "success");
+                    if (tx.getUserId() != null) {
+                        notificationService.createOnce(
+                                tx.getUserId(),
+                                inv.getId() + ":purchase",
+                                "Purchase confirmed",
+                                "Payment successful" + (amountText.isBlank() ? "." : " — " + amountText + "."),
+                                "success"
+                        );
+                    }
+
+                    if (inv.getSalesAgentId() != null) {
+                        notificationService.createOnce(
+                                inv.getSalesAgentId(),
+                                inv.getId() + ":deal-closed",
+                                "Deal closed",
+                                (inv.getCustomerName() != null ? inv.getCustomerName() : "Customer")
+                                        + " paid your invoice" + (amountText.isBlank() ? "" : " of " + amountText) + ".",
+                                "success"
+                        );
+                    }
                 }
 
                 if (inv.getConversationId() != null) {
@@ -573,13 +604,6 @@ public class PaymentService {
                         conv.setUpdatedAt(LocalDateTime.now());
                         conversationRepository.save(conv);
                     });
-                }
-
-                if (inv.getSalesAgentId() != null) {
-                    notificationService.create(inv.getSalesAgentId(), "Deal closed",
-                            (inv.getCustomerName() != null ? inv.getCustomerName() : "Customer")
-                                    + " paid your invoice" + (amountText.isBlank() ? "" : " of " + amountText) + ".",
-                            "success");
                 }
             });
         }
@@ -597,12 +621,38 @@ public class PaymentService {
                     ? "₦" + String.format("%,d", tx.getAmount() / 100)
                     : "";
             if (invoiceId == null || invoiceId.isBlank()) {
-                notificationService.create(tx.getUserId(), "Payment successful",
-                        "Your payment" + (amount.isBlank() ? "" : " of " + amount) + " was completed successfully.", "success");
+                notificationService.createOnce(
+                        tx.getUserId(),
+                        saved.getReference() + ":payment",
+                        "Payment successful",
+                        "Your payment" + (amount.isBlank() ? "" : " of " + amount) + " was completed successfully.",
+                        "success"
+                );
             }
         }
 
         return saved;
+    }
+
+    public Map<String, Object> paymentResult(PaymentTransaction tx) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("reference", tx.getReference());
+        result.put("status", tx.getStatus());
+        result.put("amount", tx.getAmount());
+        result.put("provider", tx.getProvider());
+        result.put("description", tx.getDescription());
+        resolveSurveyToken(tx).ifPresent(token -> result.put("surveyToken", token));
+        return result;
+    }
+
+    private Optional<String> resolveSurveyToken(PaymentTransaction tx) {
+        String invoiceId = tx.getMetadata() != null ? stringVal(tx.getMetadata().get("invoiceId"), null) : null;
+        if (invoiceId == null || invoiceId.isBlank()) {
+            return Optional.empty();
+        }
+        return invoiceRepository.findById(invoiceId)
+                .map(Invoice::getSurveyToken)
+                .filter(token -> token != null && !token.isBlank());
     }
 
     public void notifyCheckoutFailed(String userId, String reason) {
