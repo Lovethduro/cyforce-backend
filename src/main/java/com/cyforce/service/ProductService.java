@@ -102,12 +102,14 @@ public class ProductService {
         if (fields.get("description") != null) {
             product.setDescription(fields.get("description").trim());
         }
+        if (fields.get("stockQuantity") != null && !fields.get("stockQuantity").isBlank()) {
+            product.setStockQuantity(Math.max(0, Integer.parseInt(fields.get("stockQuantity").trim())));
+        }
         if (fields.get("inStock") != null) {
             product.setInStock(Boolean.parseBoolean(fields.get("inStock")));
         }
-        if (fields.get("stockQuantity") != null && !fields.get("stockQuantity").isBlank()) {
-            int quantity = Integer.parseInt(fields.get("stockQuantity").trim());
-            product.setStockQuantity(Math.max(0, quantity));
+        // Tracked inventory (qty > 0): availability follows quantity. Qty 0 = unlimited, use inStock flag.
+        if (product.getStockQuantity() > 0) {
             product.setInStock(product.getStockQuantity() > 0);
         }
         if (fields.get("featured") != null) {

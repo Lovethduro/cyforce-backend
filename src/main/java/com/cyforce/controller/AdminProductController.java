@@ -36,11 +36,12 @@ public class AdminProductController {
                                     @RequestParam String price,
                                     @RequestParam(required = false) String originalPrice,
                                     @RequestParam String description,
+                                    @RequestParam(defaultValue = "0") String stockQuantity,
                                     @RequestParam(defaultValue = "true") String inStock,
                                     @RequestParam(defaultValue = "false") String featured,
                                     @RequestPart("image") MultipartFile image) {
         try {
-            Map<String, String> fields = baseFields(name, category, price, originalPrice, description, inStock, featured, "true");
+            Map<String, String> fields = baseFields(name, category, price, originalPrice, description, stockQuantity, inStock, featured, "true");
             return ResponseEntity.ok(productService.create(userId, fields, image));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
@@ -55,12 +56,13 @@ public class AdminProductController {
                                     @RequestParam String price,
                                     @RequestParam(required = false) String originalPrice,
                                     @RequestParam String description,
+                                    @RequestParam(defaultValue = "0") String stockQuantity,
                                     @RequestParam(defaultValue = "true") String inStock,
                                     @RequestParam(defaultValue = "false") String featured,
                                     @RequestParam(defaultValue = "true") String active,
                                     @RequestPart(value = "image", required = false) MultipartFile image) {
         try {
-            Map<String, String> fields = baseFields(name, category, price, originalPrice, description, inStock, featured, active);
+            Map<String, String> fields = baseFields(name, category, price, originalPrice, description, stockQuantity, inStock, featured, active);
             return ResponseEntity.ok(productService.update(userId, id, fields, image));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
@@ -78,13 +80,15 @@ public class AdminProductController {
     }
 
     private Map<String, String> baseFields(String name, String category, String price, String originalPrice,
-                                           String description, String inStock, String featured, String active) {
+                                           String description, String stockQuantity, String inStock,
+                                           String featured, String active) {
         Map<String, String> fields = new HashMap<>();
         fields.put("name", name);
         fields.put("category", category);
         fields.put("price", price);
         fields.put("originalPrice", originalPrice);
         fields.put("description", description);
+        fields.put("stockQuantity", stockQuantity);
         fields.put("inStock", inStock);
         fields.put("featured", featured);
         fields.put("active", active);
