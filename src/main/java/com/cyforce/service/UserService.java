@@ -201,8 +201,7 @@ public class UserService {
         User requester = requireUser(requesterId);
         requireStaff(requester);
 
-        return userRepository.findAll().stream()
-                .sorted(Comparator.comparing(User::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
+        return userRepository.findTop500ByOrderByCreatedAtDesc().stream()
                 .map(this::toListItem)
                 .collect(Collectors.toList());
     }
@@ -220,7 +219,37 @@ public class UserService {
     public DashboardStatsResponse getDashboardStats(String requesterId) {
         User requester = requireUser(requesterId);
         requireStaff(requester);
-        return buildDashboardStats(userRepository.findAll());
+        return buildDashboardStatsFast();
+    }
+
+    public DashboardStatsResponse buildDashboardStatsFast() {
+        long totalUsers = userRepository.count();
+        long activeUsers = userRepository.countByIsActiveTrue();
+        long pendingApprovals = userRepository.countByIsActiveTrueAndIsEmailVerifiedFalse();
+        long mfaEnabledUsers = userRepository.countByMfaEnabledTrue();
+        long verifiedUsers = userRepository.countByIsEmailVerifiedTrue();
+
+        Map<String, Long> usersByRole = Map.of(
+                "ADMIN", userRepository.countByRole("ADMIN"),
+                "SUPERVISOR", userRepository.countByRole("SUPERVISOR"),
+                "SALES_AGENT", userRepository.countByRole("SALES_AGENT"),
+                "SUPPORT_AGENT", userRepository.countByRole("SUPPORT_AGENT"),
+                "CUSTOMER", userRepository.countByRole("CUSTOMER")
+        );
+
+        List<UserListItemResponse> recentUsers = userRepository.findTop5ByOrderByCreatedAtDesc().stream()
+                .map(this::toListItem)
+                .collect(Collectors.toList());
+
+        return new DashboardStatsResponse(
+                totalUsers,
+                activeUsers,
+                pendingApprovals,
+                mfaEnabledUsers,
+                verifiedUsers,
+                usersByRole,
+                recentUsers
+        );
     }
 
     public DashboardStatsResponse buildDashboardStats(List<User> users) {
@@ -306,7 +335,8 @@ public class UserService {
                 user.isMustChangePassword(),
                 user.wantsMotivationalMessages(),
                 user.getAverageRating(),
-                user.getRatingCount()
+                user.getRatingCount(),
+                user.getAuthProvider() != null ? user.getAuthProvider() : "LOCAL"
         );
     }
 

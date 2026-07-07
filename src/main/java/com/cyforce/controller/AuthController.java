@@ -187,7 +187,11 @@ public class AuthController {
     @PostMapping("/mfa/setup/init")
     public ResponseEntity<?> initMfaSetup(@RequestBody MfaSetupInitRequest request) {
         try {
-            return ResponseEntity.ok(mfaService.initSetup(request.getUserId(), request.getMethod()));
+            return ResponseEntity.ok(mfaService.initSetup(
+                    request.getUserId(),
+                    request.getMethod(),
+                    request.isReconfigure()
+            ));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

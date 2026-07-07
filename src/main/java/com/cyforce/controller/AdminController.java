@@ -1,5 +1,6 @@
 package com.cyforce.controller;
 
+import com.cyforce.model.SystemSettings;
 import com.cyforce.model.User;
 import com.cyforce.service.AdminService;
 import com.cyforce.service.DataManagementService;
@@ -188,7 +189,7 @@ public class AdminController {
     @GetMapping("/system-config")
     public ResponseEntity<?> systemConfig(@RequestHeader("X-User-Id") String userId) {
         try {
-            return ResponseEntity.ok(systemConfigService.getAdminConfig(userId));
+            return ResponseEntity.ok(systemConfigService.getAdminConfigView(userId));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
@@ -198,7 +199,8 @@ public class AdminController {
     public ResponseEntity<?> updateSystemConfig(@RequestHeader("X-User-Id") String userId,
                                                 @RequestBody Map<String, Object> body) {
         try {
-            return ResponseEntity.ok(systemConfigService.updateAdminConfig(userId, body));
+            SystemSettings updated = systemConfigService.updateAdminConfig(userId, body);
+            return ResponseEntity.ok(systemConfigService.toAdminView(updated));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

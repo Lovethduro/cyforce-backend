@@ -9,5 +9,6 @@ import java.util.List;
 @Repository
 public interface TicketMessageRepository extends MongoRepository<TicketMessage, String> {
     List<TicketMessage> findByTicketIdOrderByCreatedAtAsc(String ticketId);
+    List<TicketMessage> findByTicketIdInOrderByCreatedAtAsc(List<String> ticketIds);
     List<TicketMessage> findTop5ByAuthorIdOrderByCreatedAtDesc(String authorId);
 }

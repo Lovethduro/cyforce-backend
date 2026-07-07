@@ -20,6 +20,7 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.TextStyle;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -178,12 +179,12 @@ public class AdminService {
 
     public List<Ticket> allTickets(String userId) {
         requestUserService.requireRole(requestUserService.requireUser(userId), "ADMIN", "SUPERVISOR");
-        return ticketRepository.findAllByOrderByCreatedAtDesc();
+        return ticketRepository.findTop200ByOrderByCreatedAtDesc();
     }
 
     public List<Lead> allLeads(String userId) {
         requestUserService.requireRole(requestUserService.requireUser(userId), "ADMIN", "SUPERVISOR");
-        return leadRepository.findAllByOrderByCreatedAtDesc();
+        return leadRepository.findTop200ByOrderByCreatedAtDesc();
     }
 
     public List<AuditLog> auditLogs(String userId) {
@@ -202,8 +203,7 @@ public class AdminService {
 
     public AdminDashboardOverviewResponse adminOverview(String userId) {
         requestUserService.requireRole(requestUserService.requireUser(userId), "ADMIN", "SUPERVISOR");
-        List<User> users = userRepository.findAll();
-        DashboardStatsResponse stats = userService.buildDashboardStats(users);
+        DashboardStatsResponse stats = userService.buildDashboardStatsFast();
         List<AuditLog> logs = auditLogService.recent();
 
         long openTickets = ticketRepository.countByStatusIn(List.of("open", "in_progress"));
@@ -215,12 +215,18 @@ public class AdminService {
 
         var metrics = systemMetricsService.getDashboardMetricsBundle();
 
-        List<UserListItemResponse> pendingUsers = users.stream()
-                .filter(UserService::isPendingAccountApproval)
-                .sorted(Comparator.comparing(User::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
-                .limit(10)
+        List<UserListItemResponse> pendingUsers = userRepository
+                .findTop10ByIsActiveTrueAndIsEmailVerifiedFalseOrderByCreatedAtDesc()
+                .stream()
                 .map(userService::toListItem)
                 .toList();
+
+        LocalDateTime weekAgo = LocalDate.now().minusDays(7).atStartOfDay();
+        LocalDateTime twoWeeksAgo = LocalDate.now().minusDays(14).atStartOfDay();
+        Map<String, User> activityUsers = new HashMap<>();
+        userRepository.findByCreatedAtAfter(weekAgo).forEach(u -> activityUsers.put(u.getId(), u));
+        userRepository.findByLastLoginAtAfter(weekAgo).forEach(u -> activityUsers.putIfAbsent(u.getId(), u));
+        List<User> growthUsers = userRepository.findByCreatedAtAfter(twoWeeksAgo);
 
         return new AdminDashboardOverviewResponse(
                 stats,
@@ -229,8 +235,8 @@ public class AdminService {
                 activeSessions,
                 anomalyAlerts.size(),
                 metrics.storageUsagePercent(),
-                computeUserGrowthPercent(users),
-                buildRegistrationActivity(users),
+                computeUserGrowthPercent(growthUsers),
+                buildRegistrationActivity(new ArrayList<>(activityUsers.values())),
                 pendingUsers,
                 buildRecentActivity(logs),
                 anomalyAlerts,
@@ -337,7 +343,7 @@ public class AdminService {
     private List<AdminDashboardOverviewResponse.AnomalyAlertItem> buildAnomalyAlerts(String adminUserId) {
         List<AdminDashboardOverviewResponse.AnomalyAlertItem> items = new ArrayList<>();
 
-        notificationRepository.findByUserIdOrderByCreatedAtDesc(adminUserId).stream()
+        notificationRepository.findTop30ByUserIdOrderByCreatedAtDesc(adminUserId).stream()
                 .filter(n -> {
                     String type = n.getType() == null ? "" : n.getType().toLowerCase();
                     return type.equals("critical") || type.equals("warning") || type.equals("error");

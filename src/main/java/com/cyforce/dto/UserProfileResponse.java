@@ -28,4 +28,6 @@ public class UserProfileResponse {
     private boolean showMotivationalMessages = true;
     private double averageRating;
     private int ratingCount;
+    /** LOCAL, GOOGLE, MICROSOFT, etc. */
+    private String authProvider;
 }

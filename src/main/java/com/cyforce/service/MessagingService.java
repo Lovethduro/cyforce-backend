@@ -23,6 +23,7 @@ public class MessagingService {
 
     private static final String FRONTEND_URL = "http://localhost:3000";
     private static final int GUEST_TOKEN_DAYS = 90;
+    private static final int CUSTOMER_CHAT_EXPIRY_DAYS = 30;
 
     private final ConversationRepository conversationRepository;
     private final ConversationMessageRepository messageRepository;
@@ -56,25 +57,29 @@ public class MessagingService {
                 .toList();
     }
 
-    public List<Conversation> salesConversations(String userId) {
+    public List<Map<String, Object>> salesConversations(String userId) {
         User agent = requestUserService.requireUser(userId);
         String role = agent.getRole() == null ? "" : agent.getRole().toUpperCase();
+        List<Conversation> conversations;
         if ("SUPERVISOR".equals(role)) {
-            return conversationRepository.findBySupervisorIdOrderByUpdatedAtDesc(agent.getId());
-        }
-        if ("ADMIN".equals(role)) {
-            return conversationRepository.findAll().stream()
+            conversations = conversationRepository.findBySupervisorIdOrderByUpdatedAtDesc(agent.getId());
+        } else if ("ADMIN".equals(role)) {
+            conversations = conversationRepository.findAll().stream()
                     .sorted(Comparator.comparing(Conversation::getUpdatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
                     .toList();
+        } else {
+            requestUserService.requireRole(agent, "SALES_AGENT");
+            conversations = conversationRepository.findBySalesAgentIdOrderByUpdatedAtDesc(agent.getId());
         }
-        requestUserService.requireRole(agent, "SALES_AGENT");
-        return conversationRepository.findBySalesAgentIdOrderByUpdatedAtDesc(agent.getId());
+        return conversations.stream().map(this::toConversationView).toList();
     }
 
-    public List<Conversation> conversationQueue(String userId) {
+    public List<Map<String, Object>> conversationQueue(String userId) {
         User agent = requestUserService.requireUser(userId);
         requestUserService.requireRole(agent, "SALES_AGENT", "ADMIN", "SUPERVISOR");
-        return conversationRepository.findByStatusOrderByCreatedAtDesc("unassigned");
+        return conversationRepository.findByStatusOrderByCreatedAtDesc("unassigned").stream()
+                .map(this::toConversationView)
+                .toList();
     }
 
     public Conversation acceptConversation(String userId, String conversationId) {
@@ -93,6 +98,7 @@ public class MessagingService {
         conversation.setSalesAgentAvatarUrl(resolveAvatar(agent));
         conversation.setStatus("open");
         conversation.setUpdatedAt(LocalDateTime.now());
+        touchConversationExpiry(conversation);
         Conversation saved = conversationRepository.save(conversation);
 
         if (conversation.getCustomerId() != null) {
@@ -123,7 +129,9 @@ public class MessagingService {
         conversation.setCustomerEmail(lead.getEmail());
         conversation.setLeadId(lead.getId());
         conversation.setGuestAccessToken(token);
-        conversation.setGuestTokenExpiresAt(LocalDateTime.now().plusDays(GUEST_TOKEN_DAYS));
+        LocalDateTime guestExpiry = LocalDateTime.now().plusDays(GUEST_TOKEN_DAYS);
+        conversation.setGuestTokenExpiresAt(guestExpiry);
+        conversation.setExpiresAt(guestExpiry);
         conversation.setSubject(subject);
         conversation.setSalesAgentId(agent.getId());
         conversation.setSalesAgentName(agent.getFullName());
@@ -160,6 +168,7 @@ public class MessagingService {
             throw new RuntimeException("Message is required");
         }
         Conversation conversation = requireValidGuestToken(token);
+        ensureConversationActive(conversation);
         if ("closed".equalsIgnoreCase(conversation.getStatus())) {
             throw new RuntimeException("This conversation is closed");
         }
@@ -175,6 +184,7 @@ public class MessagingService {
         ConversationMessage saved = messageRepository.save(entry);
 
         conversation.setUpdatedAt(LocalDateTime.now());
+        touchConversationExpiry(conversation);
         conversationRepository.save(conversation);
 
         if (conversation.getSalesAgentId() != null) {
@@ -236,6 +246,7 @@ public class MessagingService {
         conversation.setTicketId(ticketId);
         conversation.setCreatedAt(LocalDateTime.now());
         conversation.setUpdatedAt(LocalDateTime.now());
+        touchConversationExpiry(conversation);
         Conversation saved = conversationRepository.save(conversation);
 
         if (message != null && !message.isBlank()) {
@@ -260,6 +271,7 @@ public class MessagingService {
         conversation.setTicketId(ticketId);
         conversation.setCreatedAt(LocalDateTime.now());
         conversation.setUpdatedAt(LocalDateTime.now());
+        touchConversationExpiry(conversation);
         Conversation saved = conversationRepository.save(conversation);
 
         if (message != null && !message.isBlank()) {
@@ -297,6 +309,7 @@ public class MessagingService {
             throw new RuntimeException("Administrators have read-only access to sales conversations");
         }
         Conversation conversation = requireAccess(userId, conversationId);
+        ensureConversationActive(conversation);
 
         ConversationMessage entry = new ConversationMessage();
         entry.setConversationId(conversation.getId());
@@ -310,6 +323,7 @@ public class MessagingService {
         ConversationMessage saved = messageRepository.save(entry);
 
         conversation.setUpdatedAt(LocalDateTime.now());
+        touchConversationExpiry(conversation);
         conversationRepository.save(conversation);
 
         if (user.getId().equals(conversation.getCustomerId())) {
@@ -459,6 +473,8 @@ public class MessagingService {
         view.put("forwardedAt", conversation.getForwardedAt());
         view.put("createdAt", conversation.getCreatedAt());
         view.put("updatedAt", conversation.getUpdatedAt());
+        view.put("expiresAt", effectiveExpiry(conversation));
+        view.put("guestTokenExpiresAt", conversation.getGuestTokenExpiresAt());
         view.put("closedAt", conversation.getClosedAt());
         view.put("closeReason", conversation.getCloseReason());
         view.put("customerRating", conversation.getCustomerRating());
@@ -505,6 +521,7 @@ public class MessagingService {
         String role = user.getRole() == null ? "" : user.getRole().toUpperCase();
 
         if (user.getId().equals(conversation.getCustomerId())) {
+            ensureConversationActive(conversation);
             return conversation;
         }
         if (user.getId().equals(conversation.getSalesAgentId())) {
@@ -535,8 +552,9 @@ public class MessagingService {
         }
         Conversation conversation = conversationRepository.findByGuestAccessToken(token.trim())
                 .orElseThrow(() -> new RuntimeException("Quote link is invalid or expired"));
-        if (conversation.getGuestTokenExpiresAt() != null
-                && conversation.getGuestTokenExpiresAt().isBefore(LocalDateTime.now())) {
+        LocalDateTime expiry = effectiveExpiry(conversation);
+        if (expiry != null && expiry.isBefore(LocalDateTime.now())) {
+            closeExpiredConversation(conversation);
             throw new RuntimeException("Quote link has expired. Please contact sales@cyforcetech.com for help.");
         }
         return conversation;
@@ -550,7 +568,58 @@ public class MessagingService {
         view.put("status", conversation.getStatus());
         view.put("createdAt", conversation.getCreatedAt());
         view.put("updatedAt", conversation.getUpdatedAt());
+        view.put("expiresAt", effectiveExpiry(conversation));
+        view.put("guestTokenExpiresAt", conversation.getGuestTokenExpiresAt());
         return view;
+    }
+
+    private void touchConversationExpiry(Conversation conversation) {
+        LocalDateTime now = LocalDateTime.now();
+        if (isGuestConversation(conversation)) {
+            LocalDateTime guestExpiry = now.plusDays(GUEST_TOKEN_DAYS);
+            conversation.setGuestTokenExpiresAt(guestExpiry);
+            conversation.setExpiresAt(guestExpiry);
+            return;
+        }
+        conversation.setExpiresAt(now.plusDays(CUSTOMER_CHAT_EXPIRY_DAYS));
+    }
+
+    private LocalDateTime effectiveExpiry(Conversation conversation) {
+        if (conversation.getGuestTokenExpiresAt() != null) {
+            return conversation.getGuestTokenExpiresAt();
+        }
+        if (conversation.getExpiresAt() != null) {
+            return conversation.getExpiresAt();
+        }
+        if (conversation.getUpdatedAt() != null) {
+            return conversation.getUpdatedAt().plusDays(CUSTOMER_CHAT_EXPIRY_DAYS);
+        }
+        if (conversation.getCreatedAt() != null) {
+            return conversation.getCreatedAt().plusDays(CUSTOMER_CHAT_EXPIRY_DAYS);
+        }
+        return null;
+    }
+
+    private void ensureConversationActive(Conversation conversation) {
+        if ("closed".equalsIgnoreCase(conversation.getStatus())) {
+            return;
+        }
+        LocalDateTime expiry = effectiveExpiry(conversation);
+        if (expiry != null && expiry.isBefore(LocalDateTime.now())) {
+            closeExpiredConversation(conversation);
+            throw new RuntimeException("This conversation has expired. Please start a new chat if you still need help.");
+        }
+    }
+
+    private void closeExpiredConversation(Conversation conversation) {
+        if ("closed".equalsIgnoreCase(conversation.getStatus())) {
+            return;
+        }
+        conversation.setStatus("closed");
+        conversation.setCloseReason("expired");
+        conversation.setClosedAt(LocalDateTime.now());
+        conversation.setUpdatedAt(LocalDateTime.now());
+        conversationRepository.save(conversation);
     }
 
     private boolean isGuestConversation(Conversation conversation) {

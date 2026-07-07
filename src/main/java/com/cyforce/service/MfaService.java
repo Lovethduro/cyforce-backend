@@ -51,36 +51,112 @@ public class MfaService {
     }
 
     public void disableMfa(String userId, String password) {
-        disableMfa(userId, password, null);
+        disableMfa(userId, password, null, null);
     }
 
-    public void disableMfa(String userId, String password, String clientIp) {
+    public void disableMfa(String userId, String password, String code, String clientIp) {
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("User not found"));
         if (!user.isMfaEnabled()) {
             throw new RuntimeException("MFA is not enabled for this account");
         }
-        if (password == null || password.isBlank()) {
-            throw new RuntimeException("Password is required to disable MFA");
+
+        if (isOAuthUser(user)) {
+            verifyOAuthDisable(user, code);
+        } else {
+            if (password == null || password.isBlank()) {
+                throw new RuntimeException("Password is required to disable MFA");
+            }
+            if (!passwordService.matchesRaw(password, user.getPassword())) {
+                throw new RuntimeException("Incorrect password");
+            }
         }
-        if (!passwordService.matchesRaw(password, user.getPassword())) {
-            throw new RuntimeException("Incorrect password");
-        }
+
         user.setMfaEnabled(false);
         user.setMfaMethod(null);
         user.setTotpSecret(null);
         clearPendingMfa(user);
         clearLoginChallenge(user);
+        clearDisableChallenge(user);
         user.setUpdatedAt(LocalDateTime.now());
         userRepository.save(user);
         securityEventService.recordMfaDisabled(user, clientIp);
     }
 
+    public void prepareDisableMfa(String userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+        if (!user.isMfaEnabled()) {
+            throw new RuntimeException("MFA is not enabled for this account");
+        }
+        if (!isOAuthUser(user)) {
+            throw new RuntimeException("Password confirmation is used for local accounts");
+        }
+        String method = normalizeMfaMethod(user.getMfaMethod());
+        if (!"email".equals(method)) {
+            return;
+        }
+        if (user.getEmail() == null || user.getEmail().isBlank()) {
+            throw new RuntimeException("No email on file to send a verification code");
+        }
+        String disableCode = String.format("%06d", new Random().nextInt(1_000_000));
+        user.setMfaDisableCode(disableCode);
+        user.setMfaDisableCodeExpiry(LocalDateTime.now().plusMinutes(10));
+        user.setUpdatedAt(LocalDateTime.now());
+        userRepository.save(user);
+        emailService.sendMfaSetupCode(user.getEmail(), disableCode);
+    }
+
+    private void verifyOAuthDisable(User user, String code) {
+        if (code == null || code.isBlank()) {
+            throw new RuntimeException("Enter your MFA verification code to disable");
+        }
+        String method = normalizeMfaMethod(user.getMfaMethod());
+        boolean valid = switch (method) {
+            case "authenticator" -> verifyAuthenticatorCode(user.getTotpSecret(), code);
+            case "email" -> verifyDisableEmailCode(user, code);
+            default -> false;
+        };
+        if (!valid) {
+            throw new RuntimeException("Invalid verification code");
+        }
+    }
+
+    private boolean verifyDisableEmailCode(User user, String code) {
+        if (user.getMfaDisableCode() == null || user.getMfaDisableCodeExpiry() == null) {
+            throw new RuntimeException("Request a verification code first");
+        }
+        if (user.getMfaDisableCodeExpiry().isBefore(LocalDateTime.now())) {
+            throw new RuntimeException("Verification code has expired. Request a new one.");
+        }
+        String normalizedCode = code.replaceAll("\\D", "");
+        return user.getMfaDisableCode().equals(normalizedCode);
+    }
+
+    private void clearDisableChallenge(User user) {
+        user.setMfaDisableCode(null);
+        user.setMfaDisableCodeExpiry(null);
+    }
+
+    private boolean isOAuthUser(User user) {
+        String provider = user.getAuthProvider();
+        return provider != null && !provider.equalsIgnoreCase("LOCAL");
+    }
+
     public MfaSetupInitResponse initSetup(String userId, String method) {
+        return initSetup(userId, method, false);
+    }
+
+    public MfaSetupInitResponse initSetup(String userId, String method, boolean reconfigure) {
         User user = getVerifiedUser(userId);
 
         if (user.isMfaEnabled()) {
-            throw new RuntimeException("MFA is already enabled for this account");
+            if (!reconfigure) {
+                throw new RuntimeException("MFA is already enabled for this account");
+            }
+            clearPendingMfa(user);
+            user.setUpdatedAt(LocalDateTime.now());
+            userRepository.save(user);
         }
 
         return switch (method) {

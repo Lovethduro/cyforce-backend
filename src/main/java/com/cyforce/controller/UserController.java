@@ -70,12 +70,27 @@ public class UserController {
         }
     }
 
+    @PostMapping("/me/mfa/disable/prepare")
+    public ResponseEntity<?> prepareDisableMfa(@RequestHeader("X-User-Id") String userId) {
+        try {
+            mfaService.prepareDisableMfa(userId);
+            return ResponseEntity.ok(Map.of("message", "Verification code sent"));
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("error", e.getMessage()));
+        }
+    }
+
     @PostMapping("/me/mfa/disable")
     public ResponseEntity<?> disableMfa(@RequestHeader("X-User-Id") String userId,
                                         @RequestBody Map<String, String> body,
                                         HttpServletRequest request) {
         try {
-            mfaService.disableMfa(userId, body.get("password"), WebRequestUtils.clientIp(request));
+            mfaService.disableMfa(
+                    userId,
+                    body.get("password"),
+                    body.get("code"),
+                    WebRequestUtils.clientIp(request)
+            );
             return ResponseEntity.ok(Map.of("message", "MFA disabled successfully"));
         } catch (RuntimeException e) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of("error", e.getMessage()));

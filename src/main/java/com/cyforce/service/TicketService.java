@@ -90,19 +90,19 @@ public class TicketService {
     public List<Ticket> supportTickets(String userId) {
         User user = requestUserService.requireUser(userId);
         requestUserService.requireRole(user, "SUPPORT_AGENT", "ADMIN", "SUPERVISOR");
-        return ticketRepository.findByAssigneeIdOrderByCreatedAtDesc(user.getId());
+        return ticketRepository.findTop200ByAssigneeIdOrderByCreatedAtDesc(user.getId());
     }
 
     public List<Ticket> allOpenTickets(String userId) {
         User user = requestUserService.requireUser(userId);
         requestUserService.requireRole(user, "SUPPORT_AGENT", "ADMIN", "SUPERVISOR");
-        return ticketRepository.findByStatusInOrderByCreatedAtDesc(List.of("open", "in_progress"));
+        return ticketRepository.findTop200ByStatusInOrderByCreatedAtDesc(List.of("open", "in_progress"));
     }
 
     public List<Ticket> allTickets(String userId) {
         User user = requestUserService.requireUser(userId);
         requestUserService.requireRole(user, "ADMIN", "SUPERVISOR");
-        return ticketRepository.findAllByOrderByCreatedAtDesc();
+        return ticketRepository.findTop200ByOrderByCreatedAtDesc();
     }
 
     public Ticket createTicket(String userId, Map<String, String> body) {
@@ -496,23 +496,26 @@ public class TicketService {
     public List<Map<String, Object>> listSupportAgents(String userId) {
         User user = requestUserService.requireUser(userId);
         requestUserService.requireRole(user, "SUPPORT_AGENT", "ADMIN", "SUPERVISOR");
+        Map<String, Long> openByAssignee = openTicketCountsByAssignee();
 
-        return userRepository.findAll().stream()
-                .filter(u -> {
-                    String role = u.getRole() != null ? u.getRole().toUpperCase() : "";
-                    return "SUPPORT_AGENT".equals(role) || "SUPERVISOR".equals(role) || "ADMIN".equals(role);
-                })
+        return userRepository.findByRoleIn(List.of("SUPPORT_AGENT", "SUPERVISOR", "ADMIN")).stream()
                 .sorted(Comparator.comparing(User::getFullName, Comparator.nullsLast(String::compareToIgnoreCase)))
                 .map(u -> {
                     Map<String, Object> item = new LinkedHashMap<>();
                     item.put("id", u.getId());
                     item.put("name", u.getFullName());
                     item.put("role", u.getRole());
-                    item.put("openTickets", openTicketsCount(u.getId()));
+                    item.put("openTickets", openByAssignee.getOrDefault(u.getId(), 0L));
                     item.put("self", u.getId().equals(userId));
                     return item;
                 })
                 .toList();
+    }
+
+    private Map<String, Long> openTicketCountsByAssignee() {
+        return ticketRepository.findTop200ByStatusInOrderByCreatedAtDesc(List.of("open", "in_progress")).stream()
+                .filter(t -> t.getAssigneeId() != null && !t.getAssigneeId().isBlank())
+                .collect(Collectors.groupingBy(Ticket::getAssigneeId, Collectors.counting()));
     }
 
     private TicketMessage saveMessage(User user, Ticket ticket, String message, boolean internalNote) {
@@ -560,9 +563,13 @@ public class TicketService {
     }
 
     public Map<String, Object> supportStats(String userId) {
-        List<Ticket> mine = supportTickets(userId);
-        long resolved = mine.stream().filter(t -> "resolved".equals(t.getStatus()) || "closed".equals(t.getStatus())).count();
-        return Map.of("assignedTickets", mine.size(), "resolvedTickets", resolved, "openQueue", allOpenTickets(userId).size());
+        User user = requestUserService.requireUser(userId);
+        requestUserService.requireRole(user, "SUPPORT_AGENT", "ADMIN", "SUPERVISOR");
+        String assigneeId = user.getId();
+        long assigned = ticketRepository.countByAssigneeId(assigneeId);
+        long resolved = ticketRepository.countByAssigneeIdAndStatusIn(assigneeId, List.of("resolved", "closed"));
+        long openQueue = ticketRepository.countByStatusIn(List.of("open", "in_progress"));
+        return Map.of("assignedTickets", assigned, "resolvedTickets", resolved, "openQueue", openQueue);
     }
 
     public List<Map<String, String>> supportMacros(String userId) {
@@ -643,7 +650,7 @@ public class TicketService {
 
     public List<Map<String, Object>> findDuplicateTickets(String userId, String ticketId) {
         User user = requestUserService.requireUser(userId);
-        requestUserService.requireRole(user, "SUPPORT_AGENT", "ADMIN", "SUPERVISOR");
+        requestUserService.requireRole(user, "SUPPORT_AGENT", "ADMIN");
 
         Ticket ticket = ticketRepository.findById(ticketId)
                 .orElseThrow(() -> new RuntimeException("Ticket not found"));
@@ -664,7 +671,7 @@ public class TicketService {
 
     public Map<String, Object> mergeTickets(String userId, String primaryTicketId, String duplicateTicketId) {
         User user = requestUserService.requireUser(userId);
-        requestUserService.requireRole(user, "SUPPORT_AGENT", "ADMIN", "SUPERVISOR");
+        requestUserService.requireRole(user, "SUPPORT_AGENT", "ADMIN");
 
         if (primaryTicketId.equals(duplicateTicketId)) {
             throw new RuntimeException("Cannot merge a ticket into itself");
@@ -1067,9 +1074,8 @@ public class TicketService {
 
     private int openTicketsCount(String assigneeId) {
         if (assigneeId == null) return Integer.MAX_VALUE;
-        return (int) ticketRepository.findByAssigneeIdOrderByCreatedAtDesc(assigneeId).stream()
-                .filter(t -> "open".equalsIgnoreCase(t.getStatus()) || "in_progress".equalsIgnoreCase(t.getStatus()))
-                .count();
+        return (int) ticketRepository.countByAssigneeIdAndStatusIn(
+                assigneeId, List.of("open", "in_progress"));
     }
 
     private String resolveAvatar(User user) {

@@ -9,7 +9,9 @@ import java.util.List;
 @Repository
 public interface AuditLogRepository extends MongoRepository<AuditLog, String> {
     List<AuditLog> findTop20ByOrderByCreatedAtDesc();
+    List<AuditLog> findTop200ByOrderByCreatedAtDesc();
     List<AuditLog> findAllByOrderByCreatedAtDesc();
     List<AuditLog> findTop10ByActionInOrderByCreatedAtDesc(List<String> actions);
+    List<AuditLog> findTop200ByActionInOrderByCreatedAtDesc(List<String> actions);
     List<AuditLog> findByActionInOrderByCreatedAtDesc(List<String> actions);
 }

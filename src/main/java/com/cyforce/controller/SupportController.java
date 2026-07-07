@@ -1,6 +1,7 @@
 package com.cyforce.controller;
 
 import com.cyforce.service.SupportDashboardService;
+import com.cyforce.service.TicketCopilotService;
 import com.cyforce.service.TicketService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -14,10 +15,14 @@ public class SupportController {
 
     private final TicketService ticketService;
     private final SupportDashboardService supportDashboardService;
+    private final TicketCopilotService ticketCopilotService;
 
-    public SupportController(TicketService ticketService, SupportDashboardService supportDashboardService) {
+    public SupportController(TicketService ticketService,
+                             SupportDashboardService supportDashboardService,
+                             TicketCopilotService ticketCopilotService) {
         this.ticketService = ticketService;
         this.supportDashboardService = supportDashboardService;
+        this.ticketCopilotService = ticketCopilotService;
     }
 
     @GetMapping("/dashboard/overview")
@@ -40,18 +45,7 @@ public class SupportController {
 
     @GetMapping("/dashboard/stats")
     public ResponseEntity<?> stats(@RequestHeader("X-User-Id") String userId) {
-        try {
-            var overview = supportDashboardService.overview(userId);
-            return ResponseEntity.ok(Map.of(
-                    "assignedTickets", overview.getStats().getOpenTickets(),
-                    "resolvedTickets", overview.getStats().getResolvedToday(),
-                    "avgResponseTime", overview.getStats().getAvgResponseTime(),
-                    "slaCompliance", overview.getStats().getSlaCompliance(),
-                    "satisfactionRating", overview.getStats().getSatisfactionRating()
-            ));
-        } catch (RuntimeException e) {
-            return ResponseEntity.ok(ticketService.supportStats(userId));
-        }
+        return ResponseEntity.ok(ticketService.supportStats(userId));
     }
 
     @GetMapping("/tickets")
@@ -109,6 +103,33 @@ public class SupportController {
                                    @RequestBody Map<String, String> body) {
         try {
             return ResponseEntity.ok(ticketService.mergeTickets(userId, id, body.get("duplicateTicketId")));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/tickets/{id}/copilot/summarize")
+    public ResponseEntity<?> copilotSummarize(@RequestHeader("X-User-Id") String userId, @PathVariable String id) {
+        try {
+            return ResponseEntity.ok(ticketCopilotService.summarize(userId, id));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/tickets/{id}/copilot/suggest-reply")
+    public ResponseEntity<?> copilotSuggestReply(@RequestHeader("X-User-Id") String userId, @PathVariable String id) {
+        try {
+            return ResponseEntity.ok(ticketCopilotService.suggestReply(userId, id));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/tickets/{id}/copilot/analyze")
+    public ResponseEntity<?> copilotAnalyze(@RequestHeader("X-User-Id") String userId, @PathVariable String id) {
+        try {
+            return ResponseEntity.ok(ticketCopilotService.analyze(userId, id));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

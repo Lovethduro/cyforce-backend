@@ -51,9 +51,11 @@ public class SupervisorDashboardService {
         User supervisor = requestUserService.requireUser(userId);
         requestUserService.requireRole(supervisor, "SUPERVISOR", "ADMIN");
 
-        List<Ticket> allTickets = filterTicketsByTeam(ticketRepository.findAllByOrderByCreatedAtDesc(), teamFilter);
+        List<Ticket> allTickets = filterTicketsByTeam(ticketRepository.findTop200ByOrderByCreatedAtDesc(), teamFilter);
         List<Lead> allLeads = filterLeadsByTeam(leadRepository.findAllByOrderByCreatedAtDesc(), teamFilter);
-        List<User> staff = filterStaffByTeam(userRepository.findAll(), teamFilter);
+        List<User> staff = filterStaffByTeam(
+                userRepository.findByRoleIn(List.of("SALES_AGENT", "SUPPORT_AGENT", "SUPERVISOR", "ADMIN")),
+                teamFilter);
 
         long openTickets = allTickets.stream()
                 .filter(t -> "open".equals(t.getStatus()) || "in_progress".equals(t.getStatus()))
@@ -62,7 +64,7 @@ public class SupervisorDashboardService {
         double avgResponse = metricsService.avgResponseHours(allTickets, null);
         double avgResolution = metricsService.avgResolutionHours(allTickets);
 
-        List<TicketFeedback> feedback = feedbackRepository.findAllByOrderByCreatedAtDesc();
+        List<TicketFeedback> feedback = feedbackRepository.findTop100ByOrderByCreatedAtDesc();
         double satisfaction = feedback.isEmpty() ? 0
                 : Math.round(feedback.stream().mapToInt(TicketFeedback::getRating).average().orElse(0) * 10.0) / 10.0;
 
@@ -198,9 +200,7 @@ public class SupervisorDashboardService {
     }
 
     private List<SupervisorDashboardOverviewResponse.ApprovalItem> buildPendingApprovals() {
-        return userRepository.findAll().stream()
-                .filter(u -> !u.isEmailVerified() || !u.isActive())
-                .limit(10)
+        return userRepository.findTop10ByIsEmailVerifiedFalseOrIsActiveFalseOrderByCreatedAtDesc().stream()
                 .map(u -> new SupervisorDashboardOverviewResponse.ApprovalItem(
                         u.getId(),
                         u.getFullName(),
@@ -306,8 +306,7 @@ public class SupervisorDashboardService {
                 .collect(Collectors.toCollection(ArrayList::new));
 
         if (items.size() < 6) {
-            userRepository.findAll().stream()
-                    .filter(u -> "SUPPORT_AGENT".equalsIgnoreCase(u.getRole()) || "SALES_AGENT".equalsIgnoreCase(u.getRole()))
+            userRepository.findByRoleIn(List.of("SUPPORT_AGENT", "SALES_AGENT")).stream()
                     .filter(u -> items.stream().noneMatch(i -> i.getUserId().equals(u.getId())))
                     .limit(6 - items.size())
                     .forEach(u -> items.add(new SupervisorDashboardOverviewResponse.TeamMemberItem(

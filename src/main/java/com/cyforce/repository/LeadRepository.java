@@ -10,4 +10,5 @@ import java.util.List;
 public interface LeadRepository extends MongoRepository<Lead, String> {
     List<Lead> findByOwnerIdOrderByCreatedAtDesc(String ownerId);
     List<Lead> findAllByOrderByCreatedAtDesc();
+    List<Lead> findTop200ByOrderByCreatedAtDesc();
 }

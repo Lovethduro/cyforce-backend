@@ -540,7 +540,13 @@ public class PaymentService {
                 inv.setStatus("paid");
                 inv.setPaidAt(LocalDateTime.now());
                 inv.setPaymentTransactionId(saved.getId());
-                if (inv.getSurveyToken() == null || inv.getSurveyToken().isBlank()) {
+                boolean issueSurvey = false;
+                if (tx.getUserId() != null) {
+                    issueSurvey = userRepository.findById(tx.getUserId())
+                            .map(this::isCustomer)
+                            .orElse(false);
+                }
+                if (issueSurvey && (inv.getSurveyToken() == null || inv.getSurveyToken().isBlank())) {
                     inv.setSurveyToken(UUID.randomUUID().toString().replace("-", ""));
                 }
                 invoiceRepository.save(inv);
@@ -552,6 +558,9 @@ public class PaymentService {
 
                     if (tx.getUserId() != null) {
                         userRepository.findById(tx.getUserId()).ifPresent(user -> {
+                            if (!isCustomer(user)) {
+                                return;
+                            }
                             if (user.getEmail() != null && !user.getEmail().isBlank()) {
                                 try {
                                     String surveyUrl = properties.getCallbackBaseUrl()
@@ -646,6 +655,12 @@ public class PaymentService {
     }
 
     private Optional<String> resolveSurveyToken(PaymentTransaction tx) {
+        if (tx.getUserId() != null) {
+            Optional<User> user = userRepository.findById(tx.getUserId());
+            if (user.isPresent() && !isCustomer(user.get())) {
+                return Optional.empty();
+            }
+        }
         String invoiceId = tx.getMetadata() != null ? stringVal(tx.getMetadata().get("invoiceId"), null) : null;
         if (invoiceId == null || invoiceId.isBlank()) {
             return Optional.empty();

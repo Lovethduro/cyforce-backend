@@ -62,7 +62,7 @@ public class AuditLogService {
     }
 
     public List<AuditLog> securityLogs() {
-        return auditLogRepository.findByActionInOrderByCreatedAtDesc(AuditLogService.SECURITY_ACTIONS);
+        return auditLogRepository.findTop200ByActionInOrderByCreatedAtDesc(AuditLogService.SECURITY_ACTIONS);
     }
 
     public List<AuditLog> recent() {
@@ -70,6 +70,6 @@ public class AuditLogService {
     }
 
     public List<AuditLog> all() {
-        return auditLogRepository.findAllByOrderByCreatedAtDesc();
+        return auditLogRepository.findTop200ByOrderByCreatedAtDesc();
     }
 }

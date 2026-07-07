@@ -49,7 +49,7 @@ public class SupportDashboardService {
         User agent = requestUserService.requireUser(userId);
         requestUserService.requireRole(agent, "SUPPORT_AGENT", "ADMIN", "SUPERVISOR");
 
-        List<Ticket> myTickets = ticketRepository.findByAssigneeIdOrderByCreatedAtDesc(agent.getId());
+        List<Ticket> myTickets = ticketRepository.findTop200ByAssigneeIdOrderByCreatedAtDesc(agent.getId());
         List<Ticket> openMine = myTickets.stream()
                 .filter(t -> "open".equals(t.getStatus()) || "in_progress".equals(t.getStatus()))
                 .toList();
@@ -60,7 +60,7 @@ public class SupportDashboardService {
                         && t.getUpdatedAt() != null && t.getUpdatedAt().toLocalDate().equals(today))
                 .count();
 
-        List<TicketFeedback> myFeedback = feedbackRepository.findByAssigneeIdOrderByCreatedAtDesc(agent.getId());
+        List<TicketFeedback> myFeedback = feedbackRepository.findTop20ByAssigneeIdOrderByCreatedAtDesc(agent.getId());
         double satisfaction = myFeedback.isEmpty() ? 0
                 : Math.round(myFeedback.stream().mapToInt(TicketFeedback::getRating).average().orElse(0) * 10.0) / 10.0;
 
@@ -170,30 +170,30 @@ public class SupportDashboardService {
     }
 
     private double computeTeamSatisfaction() {
-        List<TicketFeedback> all = feedbackRepository.findAllByOrderByCreatedAtDesc();
-        if (all.isEmpty()) return 4.5;
-        return Math.round(all.stream().mapToInt(TicketFeedback::getRating).average().orElse(0) * 10.0) / 10.0;
+        List<TicketFeedback> recent = feedbackRepository.findTop100ByOrderByCreatedAtDesc();
+        if (recent.isEmpty()) return 4.5;
+        return Math.round(recent.stream().mapToInt(TicketFeedback::getRating).average().orElse(0) * 10.0) / 10.0;
     }
 
     private List<SupportDashboardOverviewResponse.FeedbackItem> buildFeedback(List<TicketFeedback> feedback) {
-        return feedback.stream().limit(5).map(f -> new SupportDashboardOverviewResponse.FeedbackItem(
+        List<TicketFeedback> recent = feedback.stream().limit(5).toList();
+        List<String> ticketIds = recent.stream()
+                .map(TicketFeedback::getTicketId)
+                .filter(id -> id != null && !id.isBlank())
+                .distinct()
+                .toList();
+        Map<String, String> ticketNumbers = ticketRepository.findAllById(ticketIds).stream()
+                .collect(Collectors.toMap(Ticket::getId, metricsService::ticketNumber, (a, b) -> a));
+
+        return recent.stream().map(f -> new SupportDashboardOverviewResponse.FeedbackItem(
                 f.getCustomerName(),
                 f.getCompanyName(),
                 f.getRating(),
                 f.getComment(),
                 metricsService.formatIso(f.getCreatedAt()),
                 f.getTicketId(),
-                ticketNumberForId(f.getTicketId())
+                ticketNumbers.get(f.getTicketId())
         )).toList();
-    }
-
-    private String ticketNumberForId(String ticketId) {
-        if (ticketId == null || ticketId.isBlank()) {
-            return null;
-        }
-        return ticketRepository.findById(ticketId)
-                .map(metricsService::ticketNumber)
-                .orElse(null);
     }
 
     private List<SupportDashboardOverviewResponse.ArticleItem> buildArticles() {
@@ -206,13 +206,13 @@ public class SupportDashboardService {
     private List<SupportDashboardOverviewResponse.TeamMemberItem> buildTeamAvailability() {
         List<AgentPresence> all = presenceRepository.findAllByOrderByFullNameAsc();
         if (all.isEmpty()) {
-            return userRepository.findAll().stream()
-                    .filter(u -> "SUPPORT_AGENT".equalsIgnoreCase(u.getRole()) || "SUPERVISOR".equalsIgnoreCase(u.getRole()))
+            return userRepository.findByRoleIn(List.of("SUPPORT_AGENT", "SUPERVISOR")).stream()
                     .map(u -> new SupportDashboardOverviewResponse.TeamMemberItem(
                             u.getId(), u.getFullName(), "offline", "support"))
                     .toList();
         }
         return all.stream()
+                .limit(8)
                 .map(p -> new SupportDashboardOverviewResponse.TeamMemberItem(
                         p.getUserId(), p.getFullName(), p.getStatus(), p.getTeam()))
                 .toList();

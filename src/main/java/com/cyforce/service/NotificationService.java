@@ -145,7 +145,8 @@ public class NotificationService {
         notification.setSurveyToken(surveyToken);
         notification.setRead(false);
         notification.setCreatedAt(LocalDateTime.now());
-        return notificationRepository.save(notification);
+        Notification saved = notificationRepository.save(notification);
+        return saved;
     }
 
     private void clearSurveyTokenIfCompleted(Notification notification) {

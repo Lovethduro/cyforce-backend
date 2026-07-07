@@ -20,7 +20,7 @@ import java.util.UUID;
 @Service
 public class AuthService {
 
-    /** Set to true to require MFA verification after password/OAuth login. */
+    /** Legacy flag — optional org-wide forced MFA setup (not used for login challenges). */
     private static final boolean LOGIN_MFA_ENABLED = false;
 
     private static final Map<String, String> ROLE_MAP = Map.of(
@@ -144,7 +144,7 @@ public class AuthService {
         recordActivity(user);
         userRepository.save(user);
 
-        if (LOGIN_MFA_ENABLED && user.isMfaEnabled()) {
+        if (user.isMfaEnabled()) {
             String challengeToken = mfaService.beginLoginChallenge(user);
             return toMfaChallengeResponse(user, challengeToken);
         }
@@ -331,7 +331,7 @@ public class AuthService {
         userRepository.save(user);
         securityEventService.recordOAuthLoginSuccess(user, userInfo.getProvider(), clientIp);
 
-        if (LOGIN_MFA_ENABLED && user.isMfaEnabled()) {
+        if (user.isMfaEnabled()) {
             String challengeToken = mfaService.beginLoginChallenge(user);
             return toMfaChallengeResponse(user, challengeToken);
         }

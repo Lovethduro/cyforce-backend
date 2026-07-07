@@ -97,6 +97,11 @@ public class User {
 
     private LocalDateTime mfaLoginCodeExpiry;
 
+    /** One-time code emailed when an OAuth user disables MFA */
+    private String mfaDisableCode;
+
+    private LocalDateTime mfaDisableCodeExpiry;
+
     private double averageRating;
 
     private int ratingCount;

@@ -10,6 +10,9 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 @Service
 public class TicketMetricsService {
@@ -67,10 +70,11 @@ public class TicketMetricsService {
 
     public double avgResponseHours(List<Ticket> tickets, String assigneeId) {
         if (tickets.isEmpty()) return 0;
+        Map<String, List<TicketMessage>> messagesByTicket = loadMessagesGrouped(tickets);
         double totalHours = 0;
         int counted = 0;
         for (Ticket ticket : tickets) {
-            Double hours = firstResponseHours(ticket, assigneeId);
+            Double hours = firstResponseHours(ticket, assigneeId, messagesByTicket.get(ticket.getId()));
             if (hours != null) {
                 totalHours += hours;
                 counted++;
@@ -81,8 +85,13 @@ public class TicketMetricsService {
     }
 
     public Double firstResponseHours(Ticket ticket, String assigneeId) {
-        if (ticket.getCreatedAt() == null) return null;
+        if (ticket.getId() == null) return null;
         List<TicketMessage> messages = messageRepository.findByTicketIdOrderByCreatedAtAsc(ticket.getId());
+        return firstResponseHours(ticket, assigneeId, messages);
+    }
+
+    private Double firstResponseHours(Ticket ticket, String assigneeId, List<TicketMessage> messages) {
+        if (ticket.getCreatedAt() == null || messages == null || messages.isEmpty()) return null;
         for (TicketMessage msg : messages) {
             if (msg.isInternalNote()) continue;
             if (assigneeId != null && !assigneeId.equals(msg.getAuthorId())) continue;
@@ -91,6 +100,19 @@ public class TicketMetricsService {
             return Math.max(0, hours);
         }
         return null;
+    }
+
+    private Map<String, List<TicketMessage>> loadMessagesGrouped(List<Ticket> tickets) {
+        List<String> ticketIds = tickets.stream()
+                .map(Ticket::getId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (ticketIds.isEmpty()) {
+            return Map.of();
+        }
+        return messageRepository.findByTicketIdInOrderByCreatedAtAsc(ticketIds).stream()
+                .collect(Collectors.groupingBy(TicketMessage::getTicketId));
     }
 
     public double avgResolutionHours(List<Ticket> tickets) {

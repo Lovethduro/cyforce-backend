@@ -25,7 +25,7 @@ import java.util.Set;
 @Service
 public class SystemMetricsService {
 
-    private static final long CACHE_TTL_MS = 120_000;
+    private static final long CACHE_TTL_MS = 300_000;
 
     private static final Map<String, List<String>> STORAGE_GROUPS = new LinkedHashMap<>() {{
         put("Users & accounts", List.of("users"));

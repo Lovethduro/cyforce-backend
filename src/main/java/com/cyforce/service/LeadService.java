@@ -63,7 +63,7 @@ public class LeadService {
     public List<Lead> allLeads(String userId) {
         User user = requestUserService.requireUser(userId);
         requestUserService.requireRole(user, "ADMIN", "SUPERVISOR");
-        return leadRepository.findAllByOrderByCreatedAtDesc();
+        return leadRepository.findTop200ByOrderByCreatedAtDesc();
     }
 
     public Map<String, Object> createPublicQuoteRequest(Map<String, Object> body) {

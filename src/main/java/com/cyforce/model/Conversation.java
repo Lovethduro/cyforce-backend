@@ -21,6 +21,8 @@ public class Conversation {
     private String leadId;
     private String guestAccessToken;
     private LocalDateTime guestTokenExpiresAt;
+    /** When this conversation closes for inactivity / portal access (extended on new messages). */
+    private LocalDateTime expiresAt;
     private String salesAgentId;
     private String salesAgentName;
     private String salesAgentAvatarUrl;
