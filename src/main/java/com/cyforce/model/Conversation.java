@@ -1,5 +1,6 @@
 package com.cyforce.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -19,6 +20,8 @@ public class Conversation {
     private String customerName;
     private String customerEmail;
     private String leadId;
+    /** Never expose in API JSON — use dedicated portal URL helpers for authorized flows. */
+    @JsonIgnore
     private String guestAccessToken;
     private LocalDateTime guestTokenExpiresAt;
     /** When this conversation closes for inactivity / portal access (extended on new messages). */

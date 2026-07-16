@@ -1,5 +1,6 @@
 package com.cyforce.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -36,6 +37,8 @@ public class Ticket {
     private boolean adminTakeover = false;
     private LocalDateTime adminTakeoverAt;
     private String adminTakeoverById;
+    /** Never expose in API JSON — portal links are emailed or built server-side. */
+    @JsonIgnore
     private String guestAccessToken;
     private LocalDateTime guestTokenExpiresAt;
     private String mergedIntoTicketId;

@@ -9,6 +9,7 @@ import com.cyforce.repository.ConversationMessageRepository;
 import com.cyforce.repository.ConversationRepository;
 import com.cyforce.repository.InvoiceRepository;
 import com.cyforce.repository.UserRepository;
+import com.cyforce.util.SensitiveDataMasker;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -52,8 +53,9 @@ public class MessagingService {
     public List<Map<String, Object>> customerConversations(String userId) {
         User customer = requestUserService.requireUser(userId);
         requestUserService.requireRole(customer, "CUSTOMER");
+        boolean mask = SensitiveDataMasker.shouldMaskForRole(customer.getRole());
         return conversationRepository.findByCustomerIdOrderByUpdatedAtDesc(customer.getId()).stream()
-                .map(this::toConversationView)
+                .map(c -> toConversationView(c, mask))
                 .toList();
     }
 
@@ -71,14 +73,16 @@ public class MessagingService {
             requestUserService.requireRole(agent, "SALES_AGENT");
             conversations = conversationRepository.findBySalesAgentIdOrderByUpdatedAtDesc(agent.getId());
         }
-        return conversations.stream().map(this::toConversationView).toList();
+        boolean mask = SensitiveDataMasker.shouldMaskForRole(role);
+        return conversations.stream().map(c -> toConversationView(c, mask)).toList();
     }
 
     public List<Map<String, Object>> conversationQueue(String userId) {
         User agent = requestUserService.requireUser(userId);
         requestUserService.requireRole(agent, "SALES_AGENT", "ADMIN", "SUPERVISOR");
+        boolean mask = SensitiveDataMasker.shouldMaskForRole(agent.getRole());
         return conversationRepository.findByStatusOrderByCreatedAtDesc("unassigned").stream()
-                .map(this::toConversationView)
+                .map(c -> toConversationView(c, mask))
                 .toList();
     }
 
@@ -159,7 +163,7 @@ public class MessagingService {
         List<ConversationMessage> messages = messageRepository.findByConversationIdOrderByCreatedAtAsc(conversation.getId());
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("conversation", toGuestConversationView(conversation));
-        result.put("messages", messages.stream().map(this::toMessageView).toList());
+        result.put("messages", messages.stream().map(m -> toMessageView(m, false)).toList());
         return result;
     }
 
@@ -447,17 +451,25 @@ public class MessagingService {
 
     public Map<String, Object> conversationDetail(String userId, String conversationId) {
         Conversation conversation = requireAccess(userId, conversationId);
+        User viewer = requestUserService.requireUser(userId);
+        boolean mask = SensitiveDataMasker.shouldMaskForRole(viewer.getRole());
         List<ConversationMessage> messages = messageRepository.findByConversationIdOrderByCreatedAtAsc(conversationId);
-        List<Map<String, Object>> enriched = messages.stream().map(this::toMessageView).toList();
-        return Map.of("conversation", toConversationView(conversation), "messages", enriched);
+        List<Map<String, Object>> enriched = messages.stream().map(m -> toMessageView(m, mask)).toList();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("conversation", toConversationView(conversation, mask));
+        result.put("messages", enriched);
+        result.put("sensitiveDataMasked", mask);
+        return result;
     }
 
-    private Map<String, Object> toConversationView(Conversation conversation) {
+    private Map<String, Object> toConversationView(Conversation conversation, boolean maskSensitive) {
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("id", conversation.getId());
         view.put("customerId", conversation.getCustomerId());
         view.put("customerName", conversation.getCustomerName());
-        view.put("customerEmail", conversation.getCustomerEmail());
+        view.put("customerEmail", maskSensitive
+                ? SensitiveDataMasker.maskEmail(conversation.getCustomerEmail())
+                : conversation.getCustomerEmail());
         view.put("leadId", conversation.getLeadId());
         view.put("isGuest", isGuestConversation(conversation));
         view.put("salesAgentId", conversation.getSalesAgentId());
@@ -478,7 +490,9 @@ public class MessagingService {
         view.put("closedAt", conversation.getClosedAt());
         view.put("closeReason", conversation.getCloseReason());
         view.put("customerRating", conversation.getCustomerRating());
-        view.put("ratingComment", conversation.getRatingComment());
+        view.put("ratingComment", maskSensitive
+                ? SensitiveDataMasker.redactText(conversation.getRatingComment())
+                : conversation.getRatingComment());
         view.put("ratedAt", conversation.getRatedAt());
         if (conversation.getSalesAgentId() != null) {
             userRepository.findById(conversation.getSalesAgentId()).ifPresent(agent -> {
@@ -489,7 +503,7 @@ public class MessagingService {
         return view;
     }
 
-    private Map<String, Object> toMessageView(ConversationMessage message) {
+    private Map<String, Object> toMessageView(ConversationMessage message, boolean maskSensitive) {
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("id", message.getId());
         item.put("conversationId", message.getConversationId());
@@ -497,19 +511,24 @@ public class MessagingService {
         item.put("authorName", message.getAuthorName());
         item.put("authorRole", message.getAuthorRole());
         item.put("authorAvatarUrl", message.getAuthorAvatarUrl());
-        item.put("message", message.getMessage());
+        item.put("message", maskSensitive
+                ? SensitiveDataMasker.redactText(message.getMessage())
+                : message.getMessage());
         item.put("messageType", message.getMessageType() != null ? message.getMessageType() : "text");
         item.put("invoiceId", message.getInvoiceId());
         item.put("attachmentUrl", message.getAttachmentUrl());
         item.put("createdAt", message.getCreatedAt());
 
         if ("invoice".equals(message.getMessageType()) && message.getInvoiceId() != null) {
-            invoiceRepository.findById(message.getInvoiceId()).ifPresent(inv -> item.put("invoice", Map.of(
-                    "id", inv.getId(),
-                    "amount", inv.getAmount(),
-                    "status", inv.getStatus(),
-                    "description", inv.getDescription() != null ? inv.getDescription() : ""
-            )));
+            invoiceRepository.findById(message.getInvoiceId()).ifPresent(inv -> {
+                String description = inv.getDescription() != null ? inv.getDescription() : "";
+                item.put("invoice", Map.of(
+                        "id", inv.getId(),
+                        "amount", inv.getAmount(),
+                        "status", inv.getStatus(),
+                        "description", maskSensitive ? SensitiveDataMasker.redactText(description) : description
+                ));
+            });
         }
         return item;
     }

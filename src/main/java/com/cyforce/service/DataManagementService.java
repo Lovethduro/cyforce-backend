@@ -8,6 +8,7 @@ import com.cyforce.repository.LeadRepository;
 import com.cyforce.repository.SystemSettingsRepository;
 import com.cyforce.repository.TicketRepository;
 import com.cyforce.repository.UserRepository;
+import com.cyforce.util.SensitiveDataMasker;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -172,8 +173,8 @@ public class DataManagementService {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("id", user.getId());
         row.put("fullName", user.getFullName());
-        row.put("email", user.getEmail());
-        row.put("phone", user.getPhone());
+        row.put("email", SensitiveDataMasker.maskEmail(user.getEmail()));
+        row.put("phone", SensitiveDataMasker.maskPhone(user.getPhone()));
         row.put("role", user.getRole());
         row.put("companyName", user.getCompanyName());
         row.put("active", user.isActive());
@@ -187,7 +188,7 @@ public class DataManagementService {
         row.put("id", ticket.getId());
         row.put("subject", ticket.getSubject());
         row.put("customerName", ticket.getCustomerName());
-        row.put("customerEmail", ticket.getCustomerEmail());
+        row.put("customerEmail", SensitiveDataMasker.maskEmail(ticket.getCustomerEmail()));
         row.put("status", ticket.getStatus());
         row.put("priority", ticket.getPriority());
         row.put("category", ticket.getCategory());
@@ -201,8 +202,8 @@ public class DataManagementService {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("id", lead.getId());
         row.put("name", lead.getName());
-        row.put("email", lead.getEmail());
-        row.put("phone", lead.getPhone());
+        row.put("email", SensitiveDataMasker.maskEmail(lead.getEmail()));
+        row.put("phone", SensitiveDataMasker.maskPhone(lead.getPhone()));
         row.put("company", lead.getCompany());
         row.put("source", lead.getSource());
         row.put("status", lead.getStatus());

@@ -12,6 +12,7 @@ import com.cyforce.repository.LeadRepository;
 import com.cyforce.repository.NotificationRepository;
 import com.cyforce.repository.TicketRepository;
 import com.cyforce.repository.UserRepository;
+import com.cyforce.util.SensitiveDataMasker;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -178,13 +179,85 @@ public class AdminService {
     }
 
     public List<Ticket> allTickets(String userId) {
-        requestUserService.requireRole(requestUserService.requireUser(userId), "ADMIN", "SUPERVISOR");
-        return ticketRepository.findTop200ByOrderByCreatedAtDesc();
+        User viewer = requestUserService.requireUser(userId);
+        requestUserService.requireRole(viewer, "ADMIN", "SUPERVISOR");
+        List<Ticket> tickets = ticketRepository.findTop200ByOrderByCreatedAtDesc();
+        if (!SensitiveDataMasker.shouldMaskForRole(viewer.getRole())) {
+            return tickets;
+        }
+        return tickets.stream().map(this::maskTicketForAdmin).toList();
     }
 
     public List<Lead> allLeads(String userId) {
-        requestUserService.requireRole(requestUserService.requireUser(userId), "ADMIN", "SUPERVISOR");
-        return leadRepository.findTop200ByOrderByCreatedAtDesc();
+        User viewer = requestUserService.requireUser(userId);
+        requestUserService.requireRole(viewer, "ADMIN", "SUPERVISOR");
+        List<Lead> leads = leadRepository.findTop200ByOrderByCreatedAtDesc();
+        if (!SensitiveDataMasker.shouldMaskForRole(viewer.getRole())) {
+            return leads;
+        }
+        return leads.stream().map(this::maskLeadForAdmin).toList();
+    }
+
+    private Ticket maskTicketForAdmin(Ticket ticket) {
+        Ticket copy = new Ticket();
+        copy.setId(ticket.getId());
+        copy.setCustomerId(ticket.getCustomerId());
+        copy.setCustomerName(ticket.getCustomerName());
+        copy.setCustomerEmail(SensitiveDataMasker.maskEmail(ticket.getCustomerEmail()));
+        copy.setSubject(ticket.getSubject());
+        copy.setDescription(SensitiveDataMasker.redactText(ticket.getDescription()));
+        copy.setAttachmentUrl(ticket.getAttachmentUrl());
+        copy.setCategory(ticket.getCategory());
+        copy.setPriority(ticket.getPriority());
+        copy.setStatus(ticket.getStatus());
+        copy.setAssigneeId(ticket.getAssigneeId());
+        copy.setAssigneeName(ticket.getAssigneeName());
+        copy.setAssigneeAvatarUrl(ticket.getAssigneeAvatarUrl());
+        copy.setSalesConversationId(ticket.getSalesConversationId());
+        copy.setTransferredToSales(ticket.isTransferredToSales());
+        copy.setTransferredAt(ticket.getTransferredAt());
+        copy.setSlaEscalated(ticket.isSlaEscalated());
+        copy.setSlaEscalatedAt(ticket.getSlaEscalatedAt());
+        copy.setAdminTakeover(ticket.isAdminTakeover());
+        copy.setAdminTakeoverAt(ticket.getAdminTakeoverAt());
+        copy.setAdminTakeoverById(ticket.getAdminTakeoverById());
+        copy.setGuestAccessToken(null);
+        copy.setGuestTokenExpiresAt(ticket.getGuestTokenExpiresAt());
+        copy.setMergedIntoTicketId(ticket.getMergedIntoTicketId());
+        copy.setMergedAt(ticket.getMergedAt());
+        copy.setCreatedAt(ticket.getCreatedAt());
+        copy.setUpdatedAt(ticket.getUpdatedAt());
+        return copy;
+    }
+
+    private Lead maskLeadForAdmin(Lead lead) {
+        Lead copy = new Lead();
+        copy.setId(lead.getId());
+        copy.setName(lead.getName());
+        copy.setEmail(SensitiveDataMasker.maskEmail(lead.getEmail()));
+        copy.setPhone(SensitiveDataMasker.maskPhone(lead.getPhone()));
+        copy.setCompany(lead.getCompany());
+        copy.setSource(lead.getSource());
+        copy.setStatus(lead.getStatus());
+        copy.setScore(lead.getScore());
+        copy.setOwnerId(lead.getOwnerId());
+        copy.setOwnerName(lead.getOwnerName());
+        copy.setConversationId(lead.getConversationId());
+        copy.setQuoteType(lead.getQuoteType());
+        copy.setDetails(SensitiveDataMasker.redactText(lead.getDetails()));
+        copy.setProductId(lead.getProductId());
+        copy.setProductName(lead.getProductName());
+        copy.setQuantity(lead.getQuantity());
+        copy.setDeliveryAddress(lead.getDeliveryAddress() != null ? "[address redacted]" : null);
+        copy.setInstallationAddress(lead.getInstallationAddress() != null ? "[address redacted]" : null);
+        copy.setPreferredInstallationDate(lead.getPreferredInstallationDate());
+        copy.setSiteContactName(lead.getSiteContactName());
+        copy.setSiteContactPhone(SensitiveDataMasker.maskPhone(lead.getSiteContactPhone()));
+        copy.setProductType(lead.getProductType());
+        copy.setExistingProductDetails(SensitiveDataMasker.redactText(lead.getExistingProductDetails()));
+        copy.setCreatedAt(lead.getCreatedAt());
+        copy.setUpdatedAt(lead.getUpdatedAt());
+        return copy;
     }
 
     public List<AuditLog> auditLogs(String userId) {

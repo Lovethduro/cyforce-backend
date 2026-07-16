@@ -9,6 +9,7 @@ import com.cyforce.repository.AgentPresenceRepository;
 import com.cyforce.repository.TicketMessageRepository;
 import com.cyforce.repository.TicketRepository;
 import com.cyforce.repository.UserRepository;
+import com.cyforce.util.SensitiveDataMasker;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -90,19 +91,21 @@ public class TicketService {
     public List<Ticket> supportTickets(String userId) {
         User user = requestUserService.requireUser(userId);
         requestUserService.requireRole(user, "SUPPORT_AGENT", "ADMIN", "SUPERVISOR");
-        return ticketRepository.findTop200ByAssigneeIdOrderByCreatedAtDesc(user.getId());
+        List<Ticket> tickets = ticketRepository.findTop200ByAssigneeIdOrderByCreatedAtDesc(user.getId());
+        return maskTicketsForViewer(tickets, user);
     }
 
     public List<Ticket> allOpenTickets(String userId) {
         User user = requestUserService.requireUser(userId);
         requestUserService.requireRole(user, "SUPPORT_AGENT", "ADMIN", "SUPERVISOR");
-        return ticketRepository.findTop200ByStatusInOrderByCreatedAtDesc(List.of("open", "in_progress"));
+        List<Ticket> tickets = ticketRepository.findTop200ByStatusInOrderByCreatedAtDesc(List.of("open", "in_progress"));
+        return maskTicketsForViewer(tickets, user);
     }
 
     public List<Ticket> allTickets(String userId) {
         User user = requestUserService.requireUser(userId);
         requestUserService.requireRole(user, "ADMIN", "SUPERVISOR");
-        return ticketRepository.findTop200ByOrderByCreatedAtDesc();
+        return maskTicketsForViewer(ticketRepository.findTop200ByOrderByCreatedAtDesc(), user);
     }
 
     public Ticket createTicket(String userId, Map<String, String> body) {
@@ -274,17 +277,21 @@ public class TicketService {
         if (!canAccess(user, ticket)) {
             throw new RuntimeException("Ticket not found");
         }
-        return ticket;
+        return maskTicketForViewer(ticket, user);
     }
 
     public List<TicketMessage> getMessages(String userId, String ticketId) {
-        getTicket(userId, ticketId);
-        List<TicketMessage> messages = messageRepository.findByTicketIdOrderByCreatedAtAsc(ticketId);
+        Ticket ticket = ticketRepository.findById(ticketId)
+                .orElseThrow(() -> new RuntimeException("Ticket not found"));
         User user = requestUserService.requireUser(userId);
-        if (isCustomer(user)) {
-            return messages.stream().filter(m -> !m.isInternalNote()).toList();
+        if (!canAccess(user, ticket)) {
+            throw new RuntimeException("Ticket not found");
         }
-        return messages;
+        List<TicketMessage> messages = messageRepository.findByTicketIdOrderByCreatedAtAsc(ticketId);
+        if (isCustomer(user)) {
+            messages = messages.stream().filter(m -> !m.isInternalNote()).toList();
+        }
+        return maskMessagesForViewer(messages, user);
     }
 
     public TicketMessage customerReply(String userId, String ticketId, String message) {
@@ -328,7 +335,7 @@ public class TicketService {
             notificationService.createOnce(ticket.getCustomerId(), ticket.getId() + ":status:" + status, "Ticket updated",
                     "Your ticket \"" + ticket.getSubject() + "\" is now " + status, "info");
         }
-        return saved;
+        return maskTicketForViewer(saved, user);
     }
 
     public TicketMessage addResponse(String userId, String ticketId, String message, boolean internalNote) {
@@ -347,7 +354,9 @@ public class TicketService {
             enforceAdminReplyPolicy(user, ticket, internalNote);
         }
 
-        return saveMessage(user, ticket, message, internalNote);
+        TicketMessage saved = saveMessage(user, ticket, message, internalNote);
+        List<TicketMessage> masked = maskMessagesForViewer(List.of(saved), user);
+        return masked.get(0);
     }
 
     public Ticket adminTakeover(String userId, String ticketId) {
@@ -364,7 +373,7 @@ public class TicketService {
             throw new RuntimeException("Cannot take over a closed or merged ticket");
         }
         if (ticket.isAdminTakeover()) {
-            return ticket;
+            return maskTicketForViewer(ticket, admin);
         }
 
         ticket.setAdminTakeover(true);
@@ -389,7 +398,7 @@ public class TicketService {
         }
 
         auditLogService.log(admin, "TICKET_ADMIN_TAKEOVER", "Ticketing", ticket.getSubject());
-        return ticket;
+        return maskTicketForViewer(ticket, admin);
     }
 
     public Map<String, Object> transferToSales(String userId, String ticketId, String note) {
@@ -968,6 +977,74 @@ public class TicketService {
 
     private boolean isAdmin(User user) {
         return "ADMIN".equalsIgnoreCase(user.getRole());
+    }
+
+    private List<Ticket> maskTicketsForViewer(List<Ticket> tickets, User viewer) {
+        if (!SensitiveDataMasker.shouldMaskForRole(viewer.getRole())) {
+            return tickets;
+        }
+        return tickets.stream().map(t -> maskTicketForViewer(t, viewer)).toList();
+    }
+
+    private Ticket maskTicketForViewer(Ticket ticket, User viewer) {
+        if (!SensitiveDataMasker.shouldMaskForRole(viewer.getRole())) {
+            return ticket;
+        }
+        Ticket copy = copyTicket(ticket);
+        copy.setCustomerEmail(SensitiveDataMasker.maskEmail(ticket.getCustomerEmail()));
+        copy.setDescription(SensitiveDataMasker.redactText(ticket.getDescription()));
+        copy.setGuestAccessToken(null);
+        return copy;
+    }
+
+    private List<TicketMessage> maskMessagesForViewer(List<TicketMessage> messages, User viewer) {
+        if (!SensitiveDataMasker.shouldMaskForRole(viewer.getRole())) {
+            return messages;
+        }
+        return messages.stream().map(m -> {
+            TicketMessage copy = new TicketMessage();
+            copy.setId(m.getId());
+            copy.setTicketId(m.getTicketId());
+            copy.setAuthorId(m.getAuthorId());
+            copy.setAuthorName(m.getAuthorName());
+            copy.setAuthorAvatarUrl(m.getAuthorAvatarUrl());
+            copy.setMessage(SensitiveDataMasker.redactText(m.getMessage()));
+            copy.setInternalNote(m.isInternalNote());
+            copy.setCreatedAt(m.getCreatedAt());
+            return copy;
+        }).toList();
+    }
+
+    private Ticket copyTicket(Ticket ticket) {
+        Ticket copy = new Ticket();
+        copy.setId(ticket.getId());
+        copy.setCustomerId(ticket.getCustomerId());
+        copy.setCustomerName(ticket.getCustomerName());
+        copy.setCustomerEmail(ticket.getCustomerEmail());
+        copy.setSubject(ticket.getSubject());
+        copy.setDescription(ticket.getDescription());
+        copy.setAttachmentUrl(ticket.getAttachmentUrl());
+        copy.setCategory(ticket.getCategory());
+        copy.setPriority(ticket.getPriority());
+        copy.setStatus(ticket.getStatus());
+        copy.setAssigneeId(ticket.getAssigneeId());
+        copy.setAssigneeName(ticket.getAssigneeName());
+        copy.setAssigneeAvatarUrl(ticket.getAssigneeAvatarUrl());
+        copy.setSalesConversationId(ticket.getSalesConversationId());
+        copy.setTransferredToSales(ticket.isTransferredToSales());
+        copy.setTransferredAt(ticket.getTransferredAt());
+        copy.setSlaEscalated(ticket.isSlaEscalated());
+        copy.setSlaEscalatedAt(ticket.getSlaEscalatedAt());
+        copy.setAdminTakeover(ticket.isAdminTakeover());
+        copy.setAdminTakeoverAt(ticket.getAdminTakeoverAt());
+        copy.setAdminTakeoverById(ticket.getAdminTakeoverById());
+        copy.setGuestAccessToken(ticket.getGuestAccessToken());
+        copy.setGuestTokenExpiresAt(ticket.getGuestTokenExpiresAt());
+        copy.setMergedIntoTicketId(ticket.getMergedIntoTicketId());
+        copy.setMergedAt(ticket.getMergedAt());
+        copy.setCreatedAt(ticket.getCreatedAt());
+        copy.setUpdatedAt(ticket.getUpdatedAt());
+        return copy;
     }
 
     private void enforceAdminReplyPolicy(User user, Ticket ticket, boolean internalNote) {
