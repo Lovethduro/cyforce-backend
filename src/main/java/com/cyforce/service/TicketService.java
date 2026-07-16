@@ -632,6 +632,7 @@ public class TicketService {
             messages = messages.stream().filter(m -> !m.isInternalNote()).toList();
         }
 
+        boolean maskSensitive = SensitiveDataMasker.shouldMaskForRole(user.getRole());
         for (TicketMessage m : messages) {
             Map<String, Object> event = new LinkedHashMap<>();
             event.put("id", m.getId());
@@ -639,7 +640,9 @@ public class TicketService {
             event.put("authorId", m.getAuthorId());
             event.put("authorName", m.getAuthorName());
             event.put("authorAvatarUrl", m.getAuthorAvatarUrl());
-            event.put("message", m.getMessage());
+            event.put("message", maskSensitive
+                    ? SensitiveDataMasker.redactText(m.getMessage())
+                    : m.getMessage());
             event.put("internalNote", m.isInternalNote());
             event.put("createdAt", m.getCreatedAt());
             events.add(event);

@@ -7,6 +7,7 @@ import com.cyforce.model.User;
 import com.cyforce.repository.KnowledgeArticleRepository;
 import com.cyforce.repository.TicketMessageRepository;
 import com.cyforce.repository.TicketRepository;
+import com.cyforce.util.SensitiveDataMasker;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
@@ -208,7 +209,7 @@ public class TicketCopilotService {
                 %s
                 """.formatted(
                 nullToDash(ctx.ticket().getSubject()),
-                nullToDash(ctx.ticket().getDescription()),
+                redact(ctx.ticket().getDescription()),
                 nullToDash(ctx.ticket().getStatus()),
                 nullToDash(ctx.ticket().getPriority()),
                 ctx.suggestedPriority(),
@@ -229,7 +230,7 @@ public class TicketCopilotService {
                 %s
                 """.formatted(
                 nullToDash(ctx.ticket().getSubject()),
-                nullToDash(ctx.ticket().getDescription()),
+                redact(ctx.ticket().getDescription()),
                 formatMessages(ctx.messages()),
                 formatArticles(ctx.relatedArticles())
         );
@@ -250,7 +251,7 @@ public class TicketCopilotService {
                 """.formatted(
                 heuristic,
                 nullToDash(ctx.ticket().getSubject()),
-                nullToDash(ctx.ticket().getDescription()),
+                redact(ctx.ticket().getDescription()),
                 formatMessages(ctx.messages())
         );
     }
@@ -262,7 +263,7 @@ public class TicketCopilotService {
         StringBuilder sb = new StringBuilder();
         for (TicketMessage message : messages) {
             sb.append("- ").append(nullToDash(message.getAuthorName())).append(": ")
-                    .append(nullToDash(message.getMessage())).append("\n");
+                    .append(redact(message.getMessage())).append("\n");
         }
         return sb.toString().trim();
     }
@@ -276,6 +277,10 @@ public class TicketCopilotService {
             sb.append("- ").append(article.get("title")).append(": ").append(article.get("excerpt")).append("\n");
         }
         return sb.toString().trim();
+    }
+
+    private String redact(String value) {
+        return SensitiveDataMasker.redactText(nullToDash(value));
     }
 
     private String nullToDash(String value) {

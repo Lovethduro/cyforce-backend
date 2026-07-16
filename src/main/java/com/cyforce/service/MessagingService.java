@@ -299,9 +299,13 @@ public class MessagingService {
         return saved;
     }
 
-    public List<ConversationMessage> getMessages(String userId, String conversationId) {
+    public List<Map<String, Object>> getMessages(String userId, String conversationId) {
         Conversation conversation = requireAccess(userId, conversationId);
-        return messageRepository.findByConversationIdOrderByCreatedAtAsc(conversation.getId());
+        User viewer = requestUserService.requireUser(userId);
+        boolean mask = SensitiveDataMasker.shouldMaskForRole(viewer.getRole());
+        return messageRepository.findByConversationIdOrderByCreatedAtAsc(conversation.getId()).stream()
+                .map(m -> toMessageView(m, mask))
+                .toList();
     }
 
     public ConversationMessage sendMessage(String userId, String conversationId, String message, String attachmentUrl) {

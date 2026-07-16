@@ -118,6 +118,7 @@ public class RatingService {
         result.put("amount", invoice.getAmount());
         result.put("completed", invoice.isSurveyCompleted());
         result.put("agentName", invoice.getSalesAgentName());
+        result.put("questions", purchaseSurveyQuestions());
         return result;
     }
 
@@ -131,13 +132,31 @@ public class RatingService {
         int processRating = parseRating(body.get("processRating"));
         int agentRating = parseOptionalAgentRating(body.get("agentRating"));
         String comment = body.get("comment") != null ? body.get("comment").toString().trim() : "";
+        String wouldBuyAgain = normalizeWouldBuyAgain(body.get("wouldBuyAgain"));
+        String wouldNotShopReason = optionalTrimmed(body.get("wouldNotShopReason"));
+        if (wouldNotShopReason == null) {
+            // Accept common aliases from the client.
+            wouldNotShopReason = optionalTrimmed(body.get("noShopReason"));
+        }
+        if (wouldNotShopReason == null) {
+            wouldNotShopReason = optionalTrimmed(body.get("declineReason"));
+        }
+        // Reason is only meaningful when the customer says no, and is never required.
+        if (!"no".equals(wouldBuyAgain)) {
+            wouldNotShopReason = null;
+        }
 
         Map<String, Object> questionnaire = new LinkedHashMap<>();
         questionnaire.put("processRating", processRating);
         questionnaire.put("checkoutEase", parseOptionalRating(body.get("checkoutEase")));
         questionnaire.put("recommendScore", parseOptionalRating(body.get("recommendScore")));
         questionnaire.put("deliveryExpectation", stringVal(body.get("deliveryExpectation")));
-        questionnaire.put("wouldBuyAgain", stringVal(body.get("wouldBuyAgain")));
+        questionnaire.put("wouldBuyAgain", wouldBuyAgain);
+        if ("no".equals(wouldBuyAgain)) {
+            questionnaire.put("wouldNotShopReason", wouldNotShopReason);
+            questionnaire.put("wouldNotShopReasonPrompted", true);
+            questionnaire.put("wouldNotShopReasonProvided", wouldNotShopReason != null && !wouldNotShopReason.isBlank());
+        }
 
         User customer = userRepository.findById(invoice.getCustomerId()).orElse(null);
         String customerName = customer != null ? customer.getFullName() : invoice.getCustomerName();
@@ -184,10 +203,62 @@ public class RatingService {
             notificationService.clearPurchaseSurveyPrompt(customerId, invoice.getId());
         }
 
-        notifySupervisors("Purchase survey received",
-                (customerName != null ? customerName : "A customer") + " rated their purchase experience " + processRating + "/5");
+        String notifyDetail = (customerName != null ? customerName : "A customer")
+                + " rated their purchase experience " + processRating + "/5";
+        if ("no".equals(wouldBuyAgain)) {
+            notifyDetail = notifyDetail + ". Would buy again: no"
+                    + (wouldNotShopReason != null && !wouldNotShopReason.isBlank()
+                    ? ". Reason: " + wouldNotShopReason
+                    : ". No reason given");
+        }
+        notifySupervisors("Purchase survey received", notifyDetail);
 
         return Map.of("message", "Thank you for completing the survey");
+    }
+
+    private Map<String, Object> purchaseSurveyQuestions() {
+        Map<String, Object> wouldBuyAgain = new LinkedHashMap<>();
+        wouldBuyAgain.put("field", "wouldBuyAgain");
+        wouldBuyAgain.put("label", "Would you buy from us / shop with us again?");
+        wouldBuyAgain.put("options", List.of("yes", "no"));
+        wouldBuyAgain.put("required", false);
+
+        Map<String, Object> followUp = new LinkedHashMap<>();
+        followUp.put("field", "wouldNotShopReason");
+        followUp.put("prompt", "Please tell us why you will not shop with us");
+        followUp.put("helperText", "Optional — share anything that would help us improve");
+        followUp.put("required", false);
+        followUp.put("showWhen", "no");
+        wouldBuyAgain.put("followUp", followUp);
+
+        Map<String, Object> questions = new LinkedHashMap<>();
+        questions.put("wouldBuyAgain", wouldBuyAgain);
+        return questions;
+    }
+
+    private String normalizeWouldBuyAgain(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String raw = value.toString().trim().toLowerCase(Locale.ROOT);
+        if (raw.isEmpty()) {
+            return null;
+        }
+        if (raw.equals("yes") || raw.equals("y") || raw.equals("true") || raw.equals("1")) {
+            return "yes";
+        }
+        if (raw.equals("no") || raw.equals("n") || raw.equals("false") || raw.equals("0")) {
+            return "no";
+        }
+        return raw;
+    }
+
+    private String optionalTrimmed(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String text = value.toString().trim();
+        return text.isEmpty() ? null : text;
     }
 
     public List<Map<String, Object>> listFeedbackForStaff(String userId) {
@@ -610,7 +681,27 @@ public class RatingService {
         row.put("createdAt", f.createdAt());
         row.put("sentiment", sentimentLabel(f.rating()));
         row.put("dateLabel", formatRelative(f.createdAt()));
+
+        String wouldBuyAgain = questionnaireString(f.questionnaire(), "wouldBuyAgain");
+        if (wouldBuyAgain != null) {
+            row.put("wouldBuyAgain", wouldBuyAgain);
+        }
+        if ("no".equalsIgnoreCase(wouldBuyAgain)) {
+            String reason = questionnaireString(f.questionnaire(), "wouldNotShopReason");
+            row.put("wouldNotShopReason", reason);
+            row.put("wouldNotShopReasonLabel", reason != null && !reason.isBlank()
+                    ? reason
+                    : "No reason given");
+        }
         return row;
+    }
+
+    private String questionnaireString(Map<String, Object> questionnaire, String key) {
+        if (questionnaire == null || questionnaire.get(key) == null) {
+            return null;
+        }
+        String value = questionnaire.get(key).toString().trim();
+        return value.isEmpty() ? null : value;
     }
 
     private void notifySupervisors(String title, String message) {
