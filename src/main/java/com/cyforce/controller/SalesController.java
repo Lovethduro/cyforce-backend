@@ -143,6 +143,32 @@ public class SalesController {
         return ResponseEntity.ok(leadService.myLeads(userId));
     }
 
+    @GetMapping("/leads/report")
+    public ResponseEntity<?> leadsReport(@RequestHeader("X-User-Id") String userId,
+                                         @RequestParam(defaultValue = "pdf") String format) {
+        try {
+            byte[] report = leadService.leadsReport(userId, format);
+            String normalized = format == null ? "pdf" : format.trim().toLowerCase();
+            boolean pdf = "pdf".equals(normalized);
+            String filename = "leads-" + java.time.LocalDate.now() + (pdf ? ".pdf" : ".csv");
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                    .contentType(pdf ? MediaType.APPLICATION_PDF : MediaType.parseMediaType("text/csv"))
+                    .body(report);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/deals")
+    public ResponseEntity<?> deals(@RequestHeader("X-User-Id") String userId) {
+        try {
+            return ResponseEntity.ok(leadService.pipelineDeals(userId));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
     @PostMapping("/leads")
     public ResponseEntity<?> createLead(@RequestHeader("X-User-Id") String userId, @RequestBody Map<String, Object> body) {
         try {

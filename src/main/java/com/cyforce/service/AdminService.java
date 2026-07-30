@@ -317,23 +317,20 @@ public class AdminService {
 
     public AdminDashboardOverviewResponse adminOverview(String userId) {
         requestUserService.requireRole(requestUserService.requireUser(userId), "ADMIN", "SUPERVISOR");
-        DashboardStatsResponse stats = userService.buildDashboardStatsFast();
-        List<AuditLog> logs = auditLogService.recent();
 
-        long openTickets = ticketRepository.countByStatusIn(List.of("open", "in_progress"));
-        long totalLeads = leadRepository.count();
-
-        long activeSessions = userSessionService.countActiveSessions();
-
-        List<AdminDashboardOverviewResponse.AnomalyAlertItem> anomalyAlerts = buildAnomalyAlerts(userId);
-
-        var metrics = systemMetricsService.getDashboardMetricsBundle();
-
-        List<UserListItemResponse> pendingUsers = userService.findPendingEmailVerificationAccounts()
-                .stream()
+        // Load pending once — reused for stats count and the verification card.
+        List<User> pendingAccounts = userService.findPendingEmailVerificationAccounts();
+        DashboardStatsResponse stats = userService.buildDashboardStatsFast(pendingAccounts.size());
+        List<UserListItemResponse> pendingUsers = pendingAccounts.stream()
                 .limit(10)
                 .map(userService::toListItem)
                 .toList();
+
+        List<AuditLog> logs = auditLogService.recent();
+        long openTickets = ticketRepository.countByStatusIn(List.of("open", "in_progress"));
+        long totalLeads = leadRepository.count();
+        long activeSessions = userSessionService.countActiveSessions();
+        List<AdminDashboardOverviewResponse.AnomalyAlertItem> anomalyAlerts = buildAnomalyAlerts(userId);
 
         LocalDateTime weekAgo = LocalDate.now().minusDays(7).atStartOfDay();
         LocalDateTime twoWeeksAgo = LocalDate.now().minusDays(14).atStartOfDay();
@@ -342,22 +339,34 @@ public class AdminService {
         userRepository.findByLastLoginAtAfter(weekAgo).forEach(u -> activityUsers.putIfAbsent(u.getId(), u));
         List<User> growthUsers = userRepository.findByCreatedAtAfter(twoWeeksAgo);
 
+        // Heavy storage/health work is loaded separately via systemMetrics() so the
+        // first dashboard paint is not blocked by collStats / filesystem walks.
         return new AdminDashboardOverviewResponse(
                 stats,
                 openTickets,
                 totalLeads,
                 activeSessions,
                 anomalyAlerts.size(),
-                metrics.storageUsagePercent(),
+                0,
                 computeUserGrowthPercent(growthUsers),
                 buildRegistrationActivity(new ArrayList<>(activityUsers.values())),
                 pendingUsers,
                 buildRecentActivity(logs),
                 anomalyAlerts,
-                metrics.storageBreakdown(),
-                metrics.systemHealth(),
+                List.of(),
+                List.of(),
                 logs.stream().limit(10).toList()
         );
+    }
+
+    public Map<String, Object> systemMetrics(String userId) {
+        requestUserService.requireRole(requestUserService.requireUser(userId), "ADMIN", "SUPERVISOR");
+        var metrics = systemMetricsService.getDashboardMetricsBundle();
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("storageUsagePercent", metrics.storageUsagePercent());
+        body.put("storageBreakdown", metrics.storageBreakdown());
+        body.put("systemHealth", metrics.systemHealth());
+        return body;
     }
 
     public Map<String, Object> broadcastAnnouncement(String adminId, String message, String audience) {

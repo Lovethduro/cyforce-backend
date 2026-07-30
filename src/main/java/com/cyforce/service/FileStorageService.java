@@ -39,6 +39,22 @@ public class FileStorageService {
         return storeImage(file, "tickets", false);
     }
 
+    /** Customer-request proof for lead assignment approvals (image or PDF). */
+    public String storeApprovalProof(MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new RuntimeException("Evidence file is required");
+        }
+        if (file.getSize() > MAX_BYTES) {
+            throw new RuntimeException("Evidence file must be 5MB or smaller");
+        }
+        String contentType = file.getContentType() == null ? "" : file.getContentType().toLowerCase();
+        boolean allowed = ALLOWED_TYPES.contains(contentType) || "application/pdf".equals(contentType);
+        if (!allowed) {
+            throw new RuntimeException("Evidence must be a JPG, PNG, WEBP, GIF, or PDF file");
+        }
+        return storeFile(file, "approval-proofs", contentType);
+    }
+
     private String storeImage(MultipartFile file, String folder, boolean required) {
         if (file == null || file.isEmpty()) {
             if (required) throw new RuntimeException("Image is required");
@@ -51,7 +67,10 @@ public class FileStorageService {
         if (contentType == null || !ALLOWED_TYPES.contains(contentType.toLowerCase())) {
             throw new RuntimeException("Only JPG, PNG, WEBP, or GIF images are allowed");
         }
+        return storeFile(file, folder, contentType);
+    }
 
+    private String storeFile(MultipartFile file, String folder, String contentType) {
         try {
             Path dir = Paths.get("uploads", folder);
             Files.createDirectories(dir);
@@ -61,7 +80,7 @@ public class FileStorageService {
             Files.copy(file.getInputStream(), target, StandardCopyOption.REPLACE_EXISTING);
             return "/uploads/" + folder + "/" + filename;
         } catch (IOException e) {
-            throw new RuntimeException("Failed to store image: " + e.getMessage());
+            throw new RuntimeException("Failed to store file: " + e.getMessage());
         }
     }
 
@@ -82,6 +101,7 @@ public class FileStorageService {
             case "image/png" -> ".png";
             case "image/webp" -> ".webp";
             case "image/gif" -> ".gif";
+            case "application/pdf" -> ".pdf";
             default -> ".jpg";
         };
     }

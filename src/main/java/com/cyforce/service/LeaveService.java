@@ -28,19 +28,25 @@ public class LeaveService {
     private final UserRepository userRepository;
     private final RequestUserService requestUserService;
     private final NotificationService notificationService;
+    private final AuditReportService auditReportService;
+    private final AuditLogService auditLogService;
 
     public LeaveService(LeaveRequestRepository leaveRepository,
                         ApprovalRequestRepository approvalRepository,
                         CalendarEventRepository calendarEventRepository,
                         UserRepository userRepository,
                         RequestUserService requestUserService,
-                        NotificationService notificationService) {
+                        NotificationService notificationService,
+                        AuditReportService auditReportService,
+                        AuditLogService auditLogService) {
         this.leaveRepository = leaveRepository;
         this.approvalRepository = approvalRepository;
         this.calendarEventRepository = calendarEventRepository;
         this.userRepository = userRepository;
         this.requestUserService = requestUserService;
         this.notificationService = notificationService;
+        this.auditReportService = auditReportService;
+        this.auditLogService = auditLogService;
     }
 
     public Map<String, Object> eligibility(String userId) {
@@ -94,6 +100,56 @@ public class LeaveService {
                 .sorted(Comparator.comparing(LeaveRequest::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
                 .map(this::toRow)
                 .toList();
+    }
+
+    public byte[] leaveRequestsReport(String userId, String format) {
+        User user = requestUserService.requireUser(userId);
+        requestUserService.requireRole(user, "ADMIN");
+
+        List<Map<String, Object>> requests = allRequests(userId);
+        String[] headers = {
+                "Staff", "Role", "Start", "End", "Days", "Status",
+                "Reason", "Reviewed By", "Review Note", "Requested At", "Reviewed At"
+        };
+        List<String[]> rows = requests.stream()
+                .map(row -> new String[] {
+                        stringValue(row.get("userName")),
+                        stringValue(row.get("userRole")),
+                        stringValue(row.get("startDate")),
+                        stringValue(row.get("endDate")),
+                        stringValue(row.get("daysRequested")),
+                        stringValue(row.get("status")),
+                        stringValue(row.get("reason")),
+                        stringValue(row.get("reviewedByName")),
+                        stringValue(row.get("reviewNote")),
+                        stringValue(row.get("createdAt")),
+                        stringValue(row.get("reviewedAt")),
+                })
+                .toList();
+
+        String normalized = normalizeReportFormat(format);
+        auditLogService.log(user, "REPORT_GENERATED", "Leave",
+                "Leave requests export " + normalized.toUpperCase() + " (" + rows.size() + " records)");
+
+        if ("pdf".equals(normalized)) {
+            return auditReportService.toTablePdf("Leave Requests Report", headers, rows);
+        }
+        return auditReportService.toTableCsv("Leave Requests Report", headers, rows);
+    }
+
+    private String normalizeReportFormat(String format) {
+        if (format == null || format.isBlank()) {
+            return "csv";
+        }
+        String value = format.trim().toLowerCase(Locale.ROOT);
+        if (!"csv".equals(value) && !"pdf".equals(value)) {
+            throw new RuntimeException("Unsupported report format. Use csv or pdf.");
+        }
+        return value;
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? "" : String.valueOf(value);
     }
 
     public boolean reviewerCanActOnLeave(User reviewer, LeaveRequest leave) {

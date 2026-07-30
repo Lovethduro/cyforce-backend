@@ -14,6 +14,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -216,7 +217,14 @@ public class UserService {
             return true;
         }
         String email = user.getEmail();
-        return email != null && email.toLowerCase().endsWith("@removed.local");
+        if (email != null) {
+            String normalized = email.toLowerCase(Locale.ROOT).trim();
+            if (normalized.endsWith("@removed.local") || normalized.startsWith("deleted-")) {
+                return true;
+            }
+        }
+        String name = user.getFullName();
+        return name != null && "Deleted User".equalsIgnoreCase(name.trim());
     }
 
     public UserListItemResponse updateUserStatus(String requesterId, String targetUserId, boolean active) {
@@ -236,10 +244,13 @@ public class UserService {
     }
 
     public DashboardStatsResponse buildDashboardStatsFast() {
+        return buildDashboardStatsFast(findPendingEmailVerificationAccounts().size());
+    }
+
+    /** Prefer this when the pending list was already loaded to avoid a second scan. */
+    public DashboardStatsResponse buildDashboardStatsFast(long pendingApprovals) {
         long totalUsers = userRepository.count();
         long activeUsers = userRepository.countByIsActiveTrue();
-        // Must match the dashboard pending list (exclude erased / anonymized accounts).
-        long pendingApprovals = findPendingEmailVerificationAccounts().size();
         long mfaEnabledUsers = userRepository.countByMfaEnabledTrue();
         long verifiedUsers = userRepository.countByIsEmailVerifiedTrue();
 

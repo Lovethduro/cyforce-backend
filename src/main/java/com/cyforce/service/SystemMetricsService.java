@@ -21,6 +21,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 @Service
 public class SystemMetricsService {
@@ -59,6 +62,8 @@ public class SystemMetricsService {
     private long cacheExpiryAt;
     private Document cachedDbStats;
     private DashboardMetricsCache dashboardMetricsCache;
+    private long cachedUploadBytes = -1L;
+    private long cachedUploadBytesAt;
 
     public SystemMetricsService(MongoTemplate mongoTemplate,
                                 JavaMailSender mailSender,
@@ -149,51 +154,64 @@ public class SystemMetricsService {
 
     private List<AdminDashboardOverviewResponse.StorageSliceItem> computeStorageBreakdown() {
         Set<String> existingCollections = mongoTemplate.getDb().listCollectionNames().into(new java.util.HashSet<>());
-        List<GroupMetrics> groups = new ArrayList<>();
+        List<Map.Entry<String, List<String>>> entries = new ArrayList<>(STORAGE_GROUPS.entrySet());
 
-        for (Map.Entry<String, List<String>> entry : STORAGE_GROUPS.entrySet()) {
-            long bytes = 0;
-            long documents = 0;
-            for (String collection : entry.getValue()) {
-                if (!existingCollections.contains(collection)) {
+        // collStats is expensive — run groups in parallel instead of blocking serially.
+        ExecutorService pool = Executors.newFixedThreadPool(Math.min(4, Math.max(1, entries.size())));
+        try {
+            List<CompletableFuture<GroupMetrics>> futures = entries.stream()
+                    .map(entry -> CompletableFuture.supplyAsync(() -> {
+                        long bytes = 0;
+                        long documents = 0;
+                        for (String collection : entry.getValue()) {
+                            if (!existingCollections.contains(collection)) {
+                                continue;
+                            }
+                            CollectionStats stats = collectionStats(collection);
+                            bytes += stats.bytes();
+                            documents += stats.documents();
+                        }
+                        return new GroupMetrics(entry.getKey(), bytes, documents);
+                    }, pool))
+                    .toList();
+
+            List<GroupMetrics> groups = new ArrayList<>(futures.stream()
+                    .map(CompletableFuture::join)
+                    .toList());
+
+            // Uploads walk can be slow; use a short cached estimate when available.
+            long uploadBytes = cachedUploadsDirectorySize();
+            if (uploadBytes > 0) {
+                groups.add(new GroupMetrics("Uploaded files", uploadBytes, 0));
+            }
+
+            long totalBytes = groups.stream().mapToLong(GroupMetrics::bytes).sum();
+            List<AdminDashboardOverviewResponse.StorageSliceItem> slices = new ArrayList<>();
+            for (GroupMetrics group : groups) {
+                if (group.bytes() <= 0 && totalBytes > 0) {
                     continue;
                 }
-                CollectionStats stats = collectionStats(collection);
-                bytes += stats.bytes();
-                documents += stats.documents();
+                int pct = totalBytes > 0 ? percent(group.bytes(), totalBytes) : 0;
+                slices.add(new AdminDashboardOverviewResponse.StorageSliceItem(
+                        group.name(),
+                        pct,
+                        formatSizeLabel(group.bytes(), group.documents()),
+                        group.bytes()
+                ));
             }
-            groups.add(new GroupMetrics(entry.getKey(), bytes, documents));
-        }
 
-        long uploadBytes = uploadsDirectorySize();
-        if (uploadBytes > 0) {
-            groups.add(new GroupMetrics("Uploaded files", uploadBytes, 0));
-        }
-
-        long totalBytes = groups.stream().mapToLong(GroupMetrics::bytes).sum();
-        List<AdminDashboardOverviewResponse.StorageSliceItem> slices = new ArrayList<>();
-        for (GroupMetrics group : groups) {
-            if (group.bytes() <= 0 && totalBytes > 0) {
-                continue;
+            if (slices.isEmpty()) {
+                slices.add(new AdminDashboardOverviewResponse.StorageSliceItem(
+                        "Database",
+                        0,
+                        "0 B",
+                        0L
+                ));
             }
-            int pct = totalBytes > 0 ? percent(group.bytes(), totalBytes) : 0;
-            slices.add(new AdminDashboardOverviewResponse.StorageSliceItem(
-                    group.name(),
-                    pct,
-                    formatSizeLabel(group.bytes(), group.documents()),
-                    group.bytes()
-            ));
+            return slices;
+        } finally {
+            pool.shutdown();
         }
-
-        if (slices.isEmpty()) {
-            slices.add(new AdminDashboardOverviewResponse.StorageSliceItem(
-                    "Database",
-                    0,
-                    "0 B",
-                    0L
-            ));
-        }
-        return slices;
     }
 
     private List<AdminDashboardOverviewResponse.SystemHealthItem> computeSystemHealth() {
@@ -279,17 +297,16 @@ public class SystemMetricsService {
     }
 
     private HealthCheck checkEmail() {
+        // Avoid live SMTP testConnection() on dashboard load — it can stall for seconds.
         if (!(mailSender instanceof JavaMailSenderImpl impl)) {
             return new HealthCheck("degraded", "Mail sender not configured");
         }
-        long start = System.currentTimeMillis();
-        try {
-            impl.testConnection();
-            long ms = System.currentTimeMillis() - start;
-            return new HealthCheck("online", "SMTP reachable · " + ms + "ms");
-        } catch (Exception e) {
-            return new HealthCheck("offline", "SMTP error: " + shorten(e.getMessage()));
+        String host = impl.getHost();
+        if (host == null || host.isBlank()) {
+            return new HealthCheck("degraded", "SMTP host not configured");
         }
+        int port = impl.getPort();
+        return new HealthCheck("online", "SMTP configured · " + host + (port > 0 ? ":" + port : ""));
     }
 
     private HealthCheck checkAuthentication() {
@@ -325,6 +342,17 @@ public class SystemMetricsService {
         } catch (Exception e) {
             return new CollectionStats(0L, 0L);
         }
+    }
+
+    private long cachedUploadsDirectorySize() {
+        long now = System.currentTimeMillis();
+        if (cachedUploadBytes >= 0 && now - cachedUploadBytesAt < CACHE_TTL_MS) {
+            return cachedUploadBytes;
+        }
+        long size = uploadsDirectorySize();
+        cachedUploadBytes = size;
+        cachedUploadBytesAt = now;
+        return size;
     }
 
     private long uploadsDirectorySize() {

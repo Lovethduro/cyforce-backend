@@ -6,9 +6,12 @@ import com.cyforce.service.LeadService;
 import com.cyforce.service.SupervisorDashboardService;
 import com.cyforce.service.SupervisorOpsService;
 import com.cyforce.service.TicketService;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 @RestController
@@ -85,11 +88,28 @@ public class SupervisorController {
         }
     }
 
-    @PostMapping("/leads")
+    @PostMapping(value = "/leads", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<?> createLead(@RequestHeader("X-User-Id") String userId,
-                                        @RequestBody Map<String, Object> body) {
+                                        @RequestParam String name,
+                                        @RequestParam String email,
+                                        @RequestParam String phone,
+                                        @RequestParam(required = false) String company,
+                                        @RequestParam(required = false, defaultValue = "website") String source,
+                                        @RequestParam String ownerId,
+                                        @RequestParam(required = false) String reason,
+                                        @RequestParam(required = false) MultipartFile evidence) {
         try {
-            return ResponseEntity.ok(supervisorOpsService.createLead(userId, body));
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("name", name);
+            body.put("email", email);
+            body.put("phone", phone);
+            body.put("company", company);
+            body.put("source", source);
+            body.put("ownerId", ownerId);
+            if (reason != null && !reason.isBlank()) {
+                body.put("reason", reason);
+            }
+            return ResponseEntity.ok(supervisorOpsService.createLead(userId, body, evidence));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }

@@ -86,12 +86,15 @@ public class AnalyticsService {
         int leadConversionRate = leads.isEmpty() ? 0 : (int) Math.round((convertedLeads * 100.0) / leads.size());
 
         long totalCustomers = users.stream()
+                .filter(u -> !UserService.isErasedAccount(u))
                 .filter(User::isActive)
                 .filter(u -> "CUSTOMER".equalsIgnoreCase(u.getRole()))
                 .count();
         long totalAgents = users.stream()
+                .filter(u -> !UserService.isErasedAccount(u))
                 .filter(User::isActive)
-                .filter(u -> List.of("SALES_AGENT", "SUPPORT_AGENT").contains(u.getRole()))
+                .filter(u -> u.getRole() != null)
+                .filter(u -> List.of("SALES_AGENT", "SUPPORT_AGENT").contains(u.getRole().toUpperCase()))
                 .count();
 
         YearMonth currentMonth = YearMonth.now();
@@ -162,8 +165,10 @@ public class AnalyticsService {
 
         List<Ticket> tickets = ticketRepository.findAll();
         List<User> agents = userRepository.findAll().stream()
-                .filter(u -> u.isActive() && u.getRole() != null)
+                .filter(u -> !UserService.isErasedAccount(u))
+                .filter(u -> u.getRole() != null)
                 .filter(u -> List.of("SALES_AGENT", "SUPPORT_AGENT").contains(u.getRole().toUpperCase()))
+                .filter(User::isActive)
                 .toList();
 
         List<Map<String, Object>> rows = new ArrayList<>();
@@ -266,6 +271,7 @@ public class AnalyticsService {
         List<Map<String, Object>> teams = new ArrayList<>();
         for (String roleKey : List.of("SALES_AGENT", "SUPPORT_AGENT")) {
             List<User> team = users.stream()
+                    .filter(u -> !UserService.isErasedAccount(u))
                     .filter(User::isActive)
                     .filter(u -> roleKey.equalsIgnoreCase(u.getRole()))
                     .toList();

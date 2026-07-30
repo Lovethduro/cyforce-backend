@@ -12,7 +12,6 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.TextStyle;
 import java.util.*;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 @Service
 public class SupervisorDashboardService {
@@ -120,6 +119,8 @@ public class SupervisorDashboardService {
 
     private List<User> filterStaffByTeam(List<User> users, String teamFilter) {
         List<User> staff = users.stream()
+                .filter(u -> !UserService.isErasedAccount(u))
+                .filter(User::isActive)
                 .filter(u -> {
                     String role = u.getRole() == null ? "" : u.getRole().toUpperCase();
                     return role.equals("SUPPORT_AGENT") || role.equals("SALES_AGENT") || role.equals("SUPERVISOR");
@@ -200,7 +201,12 @@ public class SupervisorDashboardService {
     }
 
     private List<SupervisorDashboardOverviewResponse.ApprovalItem> buildPendingApprovals() {
-        return userRepository.findTop10ByIsEmailVerifiedFalseOrIsActiveFalseOrderByCreatedAtDesc().stream()
+        // Filter after a broader fetch so erased/anonymized accounts do not crowd out real pending rows.
+        return userRepository.findTop500ByOrderByCreatedAtDesc().stream()
+                .filter(u -> !UserService.isErasedAccount(u))
+                .filter(u -> !u.isEmailVerified() || !u.isActive())
+                .sorted(Comparator.comparing(User::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
+                .limit(10)
                 .map(u -> new SupervisorDashboardOverviewResponse.ApprovalItem(
                         u.getId(),
                         u.getFullName(),
@@ -292,27 +298,28 @@ public class SupervisorDashboardService {
     }
 
     private List<SupervisorDashboardOverviewResponse.TeamMemberItem> buildTeamAvailability(String teamFilter) {
-        List<AgentPresence> presence = presenceRepository.findAllByOrderByFullNameAsc();
-        Stream<AgentPresence> stream = presence.stream();
-        if ("support".equalsIgnoreCase(teamFilter)) {
-            stream = stream.filter(p -> "support".equalsIgnoreCase(p.getTeam()));
-        } else if ("sales".equalsIgnoreCase(teamFilter)) {
-            stream = stream.filter(p -> "sales".equalsIgnoreCase(p.getTeam()));
-        }
-        List<SupervisorDashboardOverviewResponse.TeamMemberItem> items = stream
-                .limit(6)
-                .map(p -> new SupervisorDashboardOverviewResponse.TeamMemberItem(
-                        p.getUserId(), p.getFullName(), p.getStatus(), p.getTeam()))
-                .collect(Collectors.toCollection(ArrayList::new));
+        // Staff agents only — customers and supervisors must never appear.
+        List<User> staff = filterStaffByTeam(
+                userRepository.findByRoleIn(List.of("SUPPORT_AGENT", "SALES_AGENT")),
+                teamFilter);
 
-        if (items.size() < 6) {
-            userRepository.findByRoleIn(List.of("SUPPORT_AGENT", "SALES_AGENT")).stream()
-                    .filter(u -> items.stream().noneMatch(i -> i.getUserId().equals(u.getId())))
-                    .limit(6 - items.size())
-                    .forEach(u -> items.add(new SupervisorDashboardOverviewResponse.TeamMemberItem(
-                            u.getId(), u.getFullName(), "offline", "SALES_AGENT".equalsIgnoreCase(u.getRole()) ? "sales" : "support")));
-        }
-        return items;
+        Map<String, AgentPresence> presenceByUserId = presenceRepository.findAll().stream()
+                .filter(p -> p.getUserId() != null)
+                .collect(Collectors.toMap(AgentPresence::getUserId, p -> p, (a, b) -> a));
+
+        return staff.stream()
+                .sorted(Comparator.comparing(User::getFullName, Comparator.nullsLast(String::compareToIgnoreCase)))
+                .limit(12)
+                .map(u -> {
+                    AgentPresence presence = presenceByUserId.get(u.getId());
+                    String status = presence != null && presence.getStatus() != null
+                            ? presence.getStatus()
+                            : "offline";
+                    String team = "SALES_AGENT".equalsIgnoreCase(u.getRole()) ? "sales" : "support";
+                    return new SupervisorDashboardOverviewResponse.TeamMemberItem(
+                            u.getId(), u.getFullName(), status, team);
+                })
+                .toList();
     }
 
     private List<SupervisorDashboardOverviewResponse.FeedbackItem> buildFeedback(List<TicketFeedback> feedback) {

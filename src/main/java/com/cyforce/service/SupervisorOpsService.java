@@ -9,6 +9,7 @@ import com.cyforce.repository.LeadAssignmentLogRepository;
 import com.cyforce.repository.LeadRepository;
 import com.cyforce.repository.UserRepository;
 import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
 import java.util.*;
@@ -27,6 +28,7 @@ public class SupervisorOpsService {
     private final LeadService leadService;
     private final LeaveService leaveService;
     private final SalesAgentLoadService salesAgentLoadService;
+    private final FileStorageService fileStorageService;
 
     public SupervisorOpsService(LeadRepository leadRepository,
                                 UserRepository userRepository,
@@ -36,7 +38,8 @@ public class SupervisorOpsService {
                                 NotificationService notificationService,
                                 LeadService leadService,
                                 LeaveService leaveService,
-                                SalesAgentLoadService salesAgentLoadService) {
+                                SalesAgentLoadService salesAgentLoadService,
+                                FileStorageService fileStorageService) {
         this.leadRepository = leadRepository;
         this.userRepository = userRepository;
         this.approvalRepository = approvalRepository;
@@ -46,6 +49,7 @@ public class SupervisorOpsService {
         this.leadService = leadService;
         this.leaveService = leaveService;
         this.salesAgentLoadService = salesAgentLoadService;
+        this.fileStorageService = fileStorageService;
     }
 
     public List<Map<String, Object>> salesAgentsWithLoad(String userId) {
@@ -93,8 +97,10 @@ public class SupervisorOpsService {
             }
             agent = userRepository.findById(agentId)
                     .orElseThrow(() -> new RuntimeException("Sales agent not found"));
-            if (!"SALES_AGENT".equalsIgnoreCase(agent.getRole())) {
-                throw new RuntimeException("Selected user is not a sales agent");
+            if (!"SALES_AGENT".equalsIgnoreCase(agent.getRole())
+                    || !agent.isActive()
+                    || UserService.isErasedAccount(agent)) {
+                throw new RuntimeException("Selected user is not an active sales agent");
             }
         }
 
@@ -122,7 +128,8 @@ public class SupervisorOpsService {
                 if (customerRequest && (proofUrl == null || proofUrl.isBlank())) {
                     throw new RuntimeException("Proof is required when a customer specifically requested an agent");
                 }
-                return submitAssignmentApproval(supervisor, lead, agent, body, emergency, customerRequest, proofUrl);
+                return submitAssignmentApproval(
+                        supervisor, lead, agent, body, emergency, customerRequest, proofUrl, false);
             }
         }
 
@@ -147,7 +154,8 @@ public class SupervisorOpsService {
                                                          Map<String, Object> body,
                                                          boolean emergency,
                                                          boolean customerRequest,
-                                                         String proofUrl) {
+                                                         String proofUrl,
+                                                         boolean deleteLeadOnReject) {
         ApprovalRequest approval = new ApprovalRequest();
         approval.setType("lead_assignment");
         approval.setRequestedByUserId(supervisor.getId());
@@ -155,14 +163,15 @@ public class SupervisorOpsService {
         approval.setStatus("pending");
         approval.setEmergencyReason(body.get("reason") != null ? body.get("reason").toString() : "");
         approval.setProofUrl(proofUrl);
-        approval.setPayload(Map.of(
-                "leadId", lead.getId(),
-                "leadName", lead.getName(),
-                "agentId", agent.getId(),
-                "agentName", agent.getFullName(),
-                "emergency", emergency,
-                "customerRequest", customerRequest
-        ));
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("leadId", lead.getId());
+        payload.put("leadName", lead.getName());
+        payload.put("agentId", agent.getId());
+        payload.put("agentName", agent.getFullName());
+        payload.put("emergency", emergency);
+        payload.put("customerRequest", customerRequest);
+        payload.put("deleteLeadOnReject", deleteLeadOnReject);
+        approval.setPayload(payload);
         approval.setCreatedAt(LocalDateTime.now());
         approvalRepository.save(approval);
         try {
@@ -210,10 +219,60 @@ public class SupervisorOpsService {
         return result;
     }
 
-    public Lead createLead(String supervisorId, Map<String, Object> body) {
+    public Map<String, Object> createLead(String supervisorId, Map<String, Object> body, MultipartFile evidence) {
         User supervisor = requestUserService.requireUser(supervisorId);
         requestUserService.requireRole(supervisor, "SUPERVISOR", "ADMIN");
-        return leadService.createLead(supervisor.getId(), body);
+
+        String ownerId = body.get("ownerId") == null ? "" : body.get("ownerId").toString().trim();
+        if (ownerId.isBlank()) {
+            throw new RuntimeException("Select a sales agent to own this lead");
+        }
+        User agent = userRepository.findById(ownerId)
+                .orElseThrow(() -> new RuntimeException("Selected sales agent was not found"));
+        if (!"SALES_AGENT".equalsIgnoreCase(agent.getRole())
+                || !agent.isActive()
+                || UserService.isErasedAccount(agent)) {
+            throw new RuntimeException("Select an active sales agent as the lead owner");
+        }
+
+        // Admins can create and assign immediately.
+        if ("ADMIN".equalsIgnoreCase(supervisor.getRole())) {
+            Map<String, Object> createBody = new LinkedHashMap<>(body);
+            createBody.put("ownerId", agent.getId());
+            createBody.put("pendingApproval", false);
+            Lead lead = leadService.createLead(supervisor.getId(), createBody);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("needsApproval", false);
+            result.put("lead", lead);
+            result.put("message", "Lead created and assigned to " + agent.getFullName());
+            return result;
+        }
+
+        // Supervisors must upload customer-request evidence; admin approves before assignment.
+        if (evidence == null || evidence.isEmpty()) {
+            throw new RuntimeException("Upload evidence that the customer requested this sales agent");
+        }
+        String proofUrl = fileStorageService.storeApprovalProof(evidence);
+
+        Map<String, Object> createBody = new LinkedHashMap<>(body);
+        createBody.put("pendingApproval", true);
+        Lead lead = leadService.createLead(supervisor.getId(), createBody);
+
+        Map<String, Object> approvalBody = new LinkedHashMap<>();
+        approvalBody.put("reason", body.get("reason") != null ? body.get("reason").toString()
+                : "Customer requested this sales agent");
+        Map<String, Object> approval = submitAssignmentApproval(
+                supervisor, lead, agent, approvalBody, false, true, proofUrl, true);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("needsApproval", true);
+        result.put("approvalId", approval.get("approvalId"));
+        result.put("lead", lead);
+        result.put("requestedAgentId", agent.getId());
+        result.put("requestedAgentName", agent.getFullName());
+        result.put("message", "Lead created. Assignment to " + agent.getFullName()
+                + " is pending admin approval.");
+        return result;
     }
 
     public List<Map<String, Object>> pendingApprovals(String userId) {
@@ -253,16 +312,53 @@ public class SupervisorOpsService {
         approval.setReviewedAt(LocalDateTime.now());
         approvalRepository.save(approval);
 
-        if (approve && "lead_assignment".equals(approval.getType())) {
+        if ("lead_assignment".equals(approval.getType())) {
             String leadId = String.valueOf(approval.getPayload().get("leadId"));
             String agentId = String.valueOf(approval.getPayload().get("agentId"));
-            Lead lead = leadRepository.findById(leadId).orElseThrow(() -> new RuntimeException("Lead not found"));
-            User agent = userRepository.findById(agentId).orElseThrow(() -> new RuntimeException("Agent not found"));
-            User requester = userRepository.findById(approval.getRequestedByUserId()).orElse(reviewer);
-            completeAssignment(requester, lead, agent, "approved_exception");
+            String leadName = String.valueOf(approval.getPayload().getOrDefault("leadName", "lead"));
+            String agentName = String.valueOf(approval.getPayload().getOrDefault("agentName", "the sales agent"));
+            String requesterId = approval.getRequestedByUserId();
+
+            if (approve) {
+                Lead lead = leadRepository.findById(leadId).orElseThrow(() -> new RuntimeException("Lead not found"));
+                User agent = userRepository.findById(agentId).orElseThrow(() -> new RuntimeException("Agent not found"));
+                User requester = userRepository.findById(requesterId).orElse(reviewer);
+                completeAssignment(requester, lead, agent, "approved_exception");
+                notifyRequester(requesterId,
+                        "Lead assignment approved",
+                        "Your request to assign " + leadName + " to " + agentName + " was approved.",
+                        "success");
+            } else {
+                boolean deleteLead = Boolean.TRUE.equals(approval.getPayload().get("deleteLeadOnReject"));
+                if (deleteLead) {
+                    leadRepository.findById(leadId).ifPresent(lead -> {
+                        leadRepository.deleteById(lead.getId());
+                        fileStorageService.deleteIfStored(approval.getProofUrl());
+                    });
+                }
+                String rejectNote = note != null && !note.isBlank() ? (" Reason: " + note.trim()) : "";
+                notifyRequester(requesterId,
+                        "Lead assignment rejected",
+                        deleteLead
+                                ? ("Your lead request for " + leadName + " (" + agentName
+                                + ") was rejected and the lead was removed." + rejectNote)
+                                : ("Your request to assign " + leadName + " to " + agentName
+                                + " was rejected." + rejectNote),
+                        "warning");
+            }
         }
 
         return approvalRow(reviewer, approval);
+    }
+
+    private void notifyRequester(String userId, String title, String message, String type) {
+        if (userId == null || userId.isBlank()) {
+            return;
+        }
+        try {
+            notificationService.create(userId, title, message, type);
+        } catch (Exception ignored) {
+        }
     }
 
     public Map<String, Object> broadcast(String userId, String message, String audience) {
@@ -304,8 +400,16 @@ public class SupervisorOpsService {
             Object days = approval.getPayload().get("daysRequested");
             row.put("email", (start != null ? start : "?") + " to " + (end != null ? end : "?")
                     + (days != null ? " · " + days + " day(s)" : ""));
+        } else if ("lead_assignment".equals(approval.getType()) && approval.getPayload() != null) {
+            Object leadName = approval.getPayload().getOrDefault("leadName", "Lead");
+            Object agentName = approval.getPayload().getOrDefault("agentName", "agent");
+            boolean customerRequest = Boolean.TRUE.equals(approval.getPayload().get("customerRequest"));
+            row.put("email", leadName + " → " + agentName
+                    + (customerRequest ? " (customer request)" : ""));
         } else {
-            row.put("email", String.valueOf(approval.getPayload().getOrDefault("leadName", approval.getType())));
+            row.put("email", approval.getPayload() == null
+                    ? approval.getType()
+                    : String.valueOf(approval.getPayload().getOrDefault("leadName", approval.getType())));
         }
         row.put("proofUrl", approval.getProofUrl());
         row.put("emergencyReason", approval.getEmergencyReason());

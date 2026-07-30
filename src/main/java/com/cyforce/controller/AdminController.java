@@ -6,6 +6,8 @@ import com.cyforce.service.AdminService;
 import com.cyforce.service.DataManagementService;
 import com.cyforce.service.GdprDeletionService;
 import com.cyforce.service.KnowledgeBaseService;
+import com.cyforce.service.LeaveService;
+import com.cyforce.service.SalesDashboardService;
 import com.cyforce.service.SystemConfigService;
 import com.cyforce.util.WebRequestUtils;
 import jakarta.servlet.http.HttpServletRequest;
@@ -28,23 +30,39 @@ public class AdminController {
     private final KnowledgeBaseService knowledgeBaseService;
     private final DataManagementService dataManagementService;
     private final GdprDeletionService gdprDeletionService;
+    private final LeaveService leaveService;
+    private final SalesDashboardService salesDashboardService;
 
     public AdminController(AdminService adminService,
                            SystemConfigService systemConfigService,
                            KnowledgeBaseService knowledgeBaseService,
                            DataManagementService dataManagementService,
-                           GdprDeletionService gdprDeletionService) {
+                           GdprDeletionService gdprDeletionService,
+                           LeaveService leaveService,
+                           SalesDashboardService salesDashboardService) {
         this.adminService = adminService;
         this.systemConfigService = systemConfigService;
         this.knowledgeBaseService = knowledgeBaseService;
         this.dataManagementService = dataManagementService;
         this.gdprDeletionService = gdprDeletionService;
+        this.leaveService = leaveService;
+        this.salesDashboardService = salesDashboardService;
     }
 
     @GetMapping("/dashboard/stats")
     public ResponseEntity<?> stats(@RequestHeader("X-User-Id") String userId) {
         try {
             return ResponseEntity.ok(adminService.adminOverview(userId));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /** Heavy storage / health metrics — load after the main dashboard overview. */
+    @GetMapping("/dashboard/system-metrics")
+    public ResponseEntity<?> systemMetrics(@RequestHeader("X-User-Id") String userId) {
+        try {
+            return ResponseEntity.ok(adminService.systemMetrics(userId));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
@@ -186,6 +204,38 @@ public class AdminController {
             return ResponseEntity.ok(adminService.listSessions(userId));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/leave/report")
+    public ResponseEntity<byte[]> leaveRequestsReport(@RequestHeader("X-User-Id") String userId,
+                                                      @RequestParam(value = "format", defaultValue = "csv") String format) {
+        try {
+            String normalized = format == null ? "csv" : format.trim().toLowerCase();
+            byte[] report = leaveService.leaveRequestsReport(userId, normalized);
+            String filename = "leave-requests-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")) + "." + normalized;
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                    .contentType(MediaType.parseMediaType("pdf".equals(normalized) ? "application/pdf" : "text/csv"))
+                    .body(report);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(null);
+        }
+    }
+
+    @GetMapping("/customers/report")
+    public ResponseEntity<byte[]> customersReport(@RequestHeader("X-User-Id") String userId,
+                                                  @RequestParam(value = "format", defaultValue = "csv") String format) {
+        try {
+            String normalized = format == null ? "csv" : format.trim().toLowerCase();
+            byte[] report = salesDashboardService.customersReport(userId, normalized);
+            String filename = "customers-" + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")) + "." + normalized;
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                    .contentType(MediaType.parseMediaType("pdf".equals(normalized) ? "application/pdf" : "text/csv"))
+                    .body(report);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(null);
         }
     }
 

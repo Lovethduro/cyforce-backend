@@ -32,7 +32,9 @@ public class SalesAgentLoadService {
 
     public List<Map<String, Object>> agentsWithLoad() {
         return userRepository.findAll().stream()
-                .filter(u -> u.isActive() && "SALES_AGENT".equalsIgnoreCase(u.getRole()))
+                .filter(u -> u.isActive()
+                        && "SALES_AGENT".equalsIgnoreCase(u.getRole())
+                        && !UserService.isErasedAccount(u))
                 .map(this::toAgentRow)
                 .sorted(Comparator.comparingLong(r -> ((Number) r.get("activeLeads")).longValue()))
                 .collect(Collectors.toList());
@@ -87,7 +89,10 @@ public class SalesAgentLoadService {
 
         for (AgentPresence presence : availableSales) {
             User agent = userRepository.findById(presence.getUserId()).orElse(null);
-            if (agent != null && agent.isActive() && "SALES_AGENT".equalsIgnoreCase(agent.getRole())
+            if (agent != null
+                    && agent.isActive()
+                    && "SALES_AGENT".equalsIgnoreCase(agent.getRole())
+                    && !UserService.isErasedAccount(agent)
                     && activeLeadCount(agent.getId()) < MAX_ACTIVE_LEADS_PER_AGENT) {
                 return agent;
             }

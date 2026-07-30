@@ -10,8 +10,11 @@ import com.cyforce.repository.UserRepository;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -27,6 +30,7 @@ public class LeadService {
     private final LeadRepository leadRepository;
     private final RequestUserService requestUserService;
     private final AuditLogService auditLogService;
+    private final AuditReportService auditReportService;
     private final UserRepository userRepository;
     private final NotificationService notificationService;
     private final ProductRepository productRepository;
@@ -37,6 +41,7 @@ public class LeadService {
     public LeadService(LeadRepository leadRepository,
                        RequestUserService requestUserService,
                        AuditLogService auditLogService,
+                       AuditReportService auditReportService,
                        UserRepository userRepository,
                        NotificationService notificationService,
                        ProductRepository productRepository,
@@ -46,6 +51,7 @@ public class LeadService {
         this.leadRepository = leadRepository;
         this.requestUserService = requestUserService;
         this.auditLogService = auditLogService;
+        this.auditReportService = auditReportService;
         this.userRepository = userRepository;
         this.notificationService = notificationService;
         this.productRepository = productRepository;
@@ -64,6 +70,188 @@ public class LeadService {
         User user = requestUserService.requireUser(userId);
         requestUserService.requireRole(user, "ADMIN", "SUPERVISOR");
         return leadRepository.findTop200ByOrderByCreatedAtDesc();
+    }
+
+    public byte[] leadsReport(String userId, String format) {
+        User user = requestUserService.requireUser(userId);
+        requestUserService.requireRole(user, "SALES_AGENT", "ADMIN", "SUPERVISOR");
+
+        List<Lead> leads = "SALES_AGENT".equalsIgnoreCase(user.getRole())
+                ? leadRepository.findByOwnerIdOrderByCreatedAtDesc(user.getId())
+                : leadRepository.findTop200ByOrderByCreatedAtDesc();
+
+        String[] headers = {
+                "Name", "Email", "Phone", "Company", "Quote Type", "Details",
+                "Source", "Owner", "Status", "Stage", "Amount"
+        };
+        List<String[]> rows = leads.stream()
+                .filter(lead -> lead != null && !isAnonymizedLead(lead) && !isDemoLead(lead))
+                .map(lead -> {
+                    int score = lead.getScore() > 0 ? lead.getScore() : 50;
+                    long amount = (long) score * VALUE_PER_SCORE_POINT;
+                    return new String[] {
+                            nullToEmpty(lead.getName()),
+                            nullToEmpty(lead.getEmail()),
+                            nullToEmpty(lead.getPhone()),
+                            nullToEmpty(lead.getCompany()),
+                            formatQuoteTypeLabel(lead.getQuoteType()),
+                            nullToEmpty(lead.getDetails()),
+                            nullToEmpty(lead.getSource()),
+                            lead.getOwnerName() == null || lead.getOwnerName().isBlank() ? "Unassigned" : lead.getOwnerName(),
+                            nullToEmpty(lead.getStatus()).isBlank() ? "new" : lead.getStatus(),
+                            stageFromLead(lead).replace('_', ' '),
+                            "NGN " + String.format(Locale.US, "%,d", amount),
+                    };
+                })
+                .toList();
+
+        String normalized = normalizeReportFormat(format);
+        auditLogService.log(user, "REPORT_GENERATED", "Lead Management",
+                "Lead export " + normalized.toUpperCase() + " (" + rows.size() + " records)");
+
+        if ("pdf".equals(normalized)) {
+            return auditReportService.toTablePdf("Leads Report", headers, rows);
+        }
+        return auditReportService.toTableCsv("Leads Report", headers, rows);
+    }
+
+    private static final long VALUE_PER_SCORE_POINT = 10_000L;
+
+    /**
+     * Pipeline deals sourced only from MongoDB leads (no client-side mock rows).
+     * Amount uses the same score-based pipeline value as the sales dashboard.
+     */
+    public List<Map<String, Object>> pipelineDeals(String userId) {
+        User user = requestUserService.requireUser(userId);
+        requestUserService.requireRole(user, "SALES_AGENT", "ADMIN", "SUPERVISOR");
+
+        List<Lead> leads = "SALES_AGENT".equalsIgnoreCase(user.getRole())
+                ? leadRepository.findByOwnerIdOrderByCreatedAtDesc(user.getId())
+                : leadRepository.findTop200ByOrderByCreatedAtDesc();
+
+        Map<String, Lead> uniqueById = new LinkedHashMap<>();
+        Map<String, Lead> uniqueByFingerprint = new LinkedHashMap<>();
+        for (Lead lead : leads) {
+            if (lead == null || lead.getId() == null || isAnonymizedLead(lead)) {
+                continue;
+            }
+            uniqueById.putIfAbsent(lead.getId(), lead);
+        }
+
+        List<Lead> ordered = new ArrayList<>(uniqueById.values());
+        ordered.sort(Comparator.comparing(Lead::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())));
+        for (Lead lead : ordered) {
+            uniqueByFingerprint.putIfAbsent(dealFingerprint(lead), lead);
+        }
+
+        return uniqueByFingerprint.values().stream()
+                .sorted(Comparator.comparing(Lead::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
+                .map(this::toDealRow)
+                .toList();
+    }
+
+    private Map<String, Object> toDealRow(Lead lead) {
+        long amount = resolveDealAmount(lead);
+        String stage = stageFromLead(lead);
+        String customer = lead.getName() != null ? lead.getName().trim() : "";
+        String company = lead.getCompany() != null ? lead.getCompany().trim() : "";
+        String dealName = !company.isBlank() ? company + " - " + customer : customer;
+
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", lead.getId());
+        row.put("deal", dealName);
+        row.put("customer", customer);
+        row.put("company", company.isBlank() ? null : company);
+        row.put("amount", amount);
+        row.put("amountLabel", amount > 0 ? "₦" + String.format(Locale.US, "%,d", amount) : "—");
+        row.put("stage", stage);
+        row.put("status", lead.getStatus());
+        row.put("productId", lead.getProductId());
+        row.put("productName", lead.getProductName());
+        row.put("ownerId", lead.getOwnerId());
+        row.put("ownerName", lead.getOwnerName());
+        row.put("createdAt", lead.getCreatedAt());
+        return row;
+    }
+
+    private long resolveDealAmount(Lead lead) {
+        int score = lead.getScore() > 0 ? lead.getScore() : 50;
+        return (long) score * VALUE_PER_SCORE_POINT;
+    }
+
+    private static String stageFromLead(Lead lead) {
+        String status = lead.getStatus() == null ? "" : lead.getStatus().trim().toLowerCase(Locale.ROOT);
+        int score = lead.getScore();
+        return switch (status) {
+            case "converted" -> "closed_won";
+            case "lost" -> "closed_lost";
+            case "qualified" -> score >= 85 ? "negotiation" : score >= 70 ? "proposal" : "qualified";
+            case "contacted" -> "discovery";
+            default -> "new";
+        };
+    }
+
+    private static String dealFingerprint(Lead lead) {
+        return String.join("|",
+                normalizeKey(lead.getEmail()),
+                normalizeKey(lead.getName()),
+                normalizeKey(lead.getCompany()),
+                normalizeKey(lead.getStatus()),
+                String.valueOf(lead.getScore()),
+                normalizeKey(lead.getProductId()));
+    }
+
+    private static String normalizeKey(String value) {
+        return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private static boolean isAnonymizedLead(Lead lead) {
+        String name = lead.getName() == null ? "" : lead.getName().trim();
+        if (name.equalsIgnoreCase("Deleted User") || name.toLowerCase(Locale.ROOT).contains("[redacted")) {
+            return true;
+        }
+        String email = lead.getEmail() == null ? "" : lead.getEmail().trim().toLowerCase(Locale.ROOT);
+        return email.endsWith("@removed.local") || email.startsWith("deleted-");
+    }
+
+    private static boolean isDemoLead(Lead lead) {
+        String email = lead.getEmail() == null ? "" : lead.getEmail().trim().toLowerCase(Locale.ROOT);
+        String name = lead.getName() == null ? "" : lead.getName().trim().toLowerCase(Locale.ROOT);
+        String company = lead.getCompany() == null ? "" : lead.getCompany().trim().toLowerCase(Locale.ROOT);
+        if (email.endsWith("@example.com")) {
+            return true;
+        }
+        if ("ibrahim@solar.ng".equals(email) || (name.equals("ibrahim musa") && company.equals("solar ng"))) {
+            return true;
+        }
+        if (name.equals("john smith") && company.equals("acme corp")) {
+            return true;
+        }
+        return name.equals("sarah johnson") && company.equals("techstart");
+    }
+
+    private static String formatQuoteTypeLabel(String quoteType) {
+        if (quoteType == null || quoteType.isBlank()) {
+            return "-";
+        }
+        return switch (quoteType.trim().toLowerCase(Locale.ROOT)) {
+            case "products_only" -> "Products Only";
+            case "products_installation" -> "Products + Installation";
+            case "installation_only" -> "Installation Only";
+            default -> quoteType.replace('_', ' ');
+        };
+    }
+
+    private static String nullToEmpty(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    private static String normalizeReportFormat(String format) {
+        String value = format == null ? "csv" : format.trim().toLowerCase(Locale.ROOT);
+        if (!"csv".equals(value) && !"pdf".equals(value)) {
+            throw new RuntimeException("Unsupported report format. Use csv or pdf.");
+        }
+        return value;
     }
 
     public Map<String, Object> createPublicQuoteRequest(Map<String, Object> body) {
@@ -259,19 +447,40 @@ public class LeadService {
     public Lead createLead(String userId, Map<String, Object> body) {
         User user = requestUserService.requireUser(userId);
         requestUserService.requireRole(user, "SALES_AGENT", "ADMIN", "SUPERVISOR");
+
+        String name = stringVal(body.get("name"));
+        String email = stringVal(body.get("email")).toLowerCase(Locale.ROOT);
+        String phone = stringVal(body.get("phone"));
+        if (name.isBlank()) {
+            throw new RuntimeException("Name is required");
+        }
+        if (email.isBlank() || !email.contains("@")) {
+            throw new RuntimeException("A valid email is required");
+        }
+        phone = requireInternationalPhone(phone, "Phone number must include country code (e.g. +2348012345678)");
+
         Lead lead = new Lead();
-        lead.setName((String) body.get("name"));
-        lead.setEmail((String) body.get("email"));
-        lead.setPhone((String) body.get("phone"));
-        lead.setCompany((String) body.get("company"));
-        lead.setSource((String) body.getOrDefault("source", "website"));
+        lead.setName(name);
+        lead.setEmail(email);
+        lead.setPhone(phone);
+        lead.setCompany(stringVal(body.get("company")).isBlank() ? null : stringVal(body.get("company")));
+        lead.setSource(stringVal(body.getOrDefault("source", "website")).isBlank()
+                ? "website"
+                : stringVal(body.getOrDefault("source", "website")));
         lead.setStatus("new");
         lead.setScore(body.get("score") instanceof Number ? ((Number) body.get("score")).intValue() : 50);
+        boolean pendingApproval = Boolean.TRUE.equals(body.get("pendingApproval"))
+                || "true".equalsIgnoreCase(stringVal(body.get("pendingApproval")));
         if ("SALES_AGENT".equalsIgnoreCase(user.getRole())) {
             lead.setOwnerId(user.getId());
             lead.setOwnerName(user.getFullName());
+        } else if (pendingApproval) {
+            // Supervisor-created leads stay unassigned until admin approves the requested agent.
+            lead.setOwnerId(null);
+            lead.setOwnerName(null);
         } else {
-            User agent = salesAgentLoadService.pickLightestLoadAgent();
+            // Admins (or direct staff creates) assign immediately to a real sales agent.
+            User agent = resolveOwnerForStaffCreatedLead(stringVal(body.get("ownerId")));
             lead.setOwnerId(agent.getId());
             lead.setOwnerName(agent.getFullName());
         }
@@ -372,6 +581,20 @@ public class LeadService {
 
     private String stringVal(Object value) {
         return value == null ? "" : value.toString().trim();
+    }
+
+    private User resolveOwnerForStaffCreatedLead(String ownerId) {
+        if (!ownerId.isBlank()) {
+            User agent = userRepository.findById(ownerId)
+                    .orElseThrow(() -> new RuntimeException("Selected sales agent was not found"));
+            if (!"SALES_AGENT".equalsIgnoreCase(agent.getRole())
+                    || !agent.isActive()
+                    || UserService.isErasedAccount(agent)) {
+                throw new RuntimeException("Select an active sales agent as the lead owner");
+            }
+            return agent;
+        }
+        return salesAgentLoadService.pickLightestLoadAgent();
     }
 
     private static final int MAX_QUOTE_QUANTITY = 999;

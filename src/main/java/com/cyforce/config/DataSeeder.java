@@ -73,12 +73,6 @@ public class DataSeeder implements ApplicationRunner {
 
         log.info("Seeding demo CRM data...");
 
-        User salesOwner = userRepository.findByEmailIgnoreCase("groupfcmp@gmail.com")
-                .filter(u -> "SALES_AGENT".equalsIgnoreCase(u.getRole()))
-                .orElseGet(() -> userRepository.findAll().stream()
-                        .filter(u -> "SALES_AGENT".equalsIgnoreCase(u.getRole()))
-                        .findFirst()
-                        .orElse(null));
         User supportAgent = userRepository.findAll().stream()
                 .filter(u -> "SUPPORT_AGENT".equalsIgnoreCase(u.getRole()))
                 .findFirst()
@@ -88,16 +82,10 @@ public class DataSeeder implements ApplicationRunner {
                 .findFirst()
                 .orElse(null);
 
-        String ownerId = salesOwner != null ? salesOwner.getId() : null;
-        String ownerName = salesOwner != null ? salesOwner.getFullName() : "Unassigned";
         String agentId = supportAgent != null ? supportAgent.getId() : null;
         String agentName = supportAgent != null ? supportAgent.getFullName() : "Support Agent";
 
-        leadRepository.saveAll(List.of(
-                demoLead("John Smith", "john.smith@example.com", "+2348011111111", "Acme Corp", "website", "new", 72, ownerId, ownerName, LocalDateTime.now().minusDays(2), LocalDateTime.now()),
-                demoLead("Sarah Johnson", "sarah.j@example.com", "+2348022222222", "TechStart", "referral", "qualified", 85, ownerId, ownerName, LocalDateTime.now().minusDays(5), LocalDateTime.now()),
-                demoLead("Ibrahim Musa", "ibrahim@solar.ng", "+2348033333333", "Solar NG", "event", "converted", 90, ownerId, ownerName, LocalDateTime.now().minusDays(10), LocalDateTime.now().minusDays(1))
-        ));
+        removeDemoLeads();
 
         Ticket t1 = ticketRepository.save(demoTicket(
                 customer != null ? customer.getId() : null, "Sarah Thompson", "sarah@techinn.com",
@@ -196,7 +184,7 @@ public class DataSeeder implements ApplicationRunner {
                         presenceRepository.save(p);
                     });
         }
-        ensureDemoLeadsForSalesAgents();
+        removeDemoLeads();
         seedHotDealsIfEmpty();
     }
 
@@ -234,38 +222,22 @@ public class DataSeeder implements ApplicationRunner {
         log.info("Seeded default hot deal for customer portal");
     }
 
-    private void ensureDemoLeadsForSalesAgents() {
-        userRepository.findAll().stream()
-                .filter(u -> "SALES_AGENT".equalsIgnoreCase(u.getRole()))
-                .forEach(agent -> {
-                    if (!leadRepository.findByOwnerIdOrderByCreatedAtDesc(agent.getId()).isEmpty()) {
-                        return;
-                    }
-                    log.info("Seeding demo leads for sales agent {}", agent.getEmail());
-                    leadRepository.saveAll(List.of(
-                            demoLead("John Smith", "john.smith@example.com", "+2348011111111", "Acme Corp", "website", "new", 72, agent.getId(), agent.getFullName(), LocalDateTime.now().minusDays(2), LocalDateTime.now()),
-                            demoLead("Sarah Johnson", "sarah.j@example.com", "+2348022222222", "TechStart", "referral", "qualified", 85, agent.getId(), agent.getFullName(), LocalDateTime.now().minusDays(5), LocalDateTime.now()),
-                            demoLead("Ibrahim Musa", "ibrahim@solar.ng", "+2348033333333", "Solar NG", "event", "converted", 90, agent.getId(), agent.getFullName(), LocalDateTime.now().minusDays(10), LocalDateTime.now().minusDays(1))
-                    ));
-                });
-    }
-
-    private static Lead demoLead(String name, String email, String phone, String company, String source,
-                                 String status, int score, String ownerId, String ownerName,
-                                 LocalDateTime createdAt, LocalDateTime updatedAt) {
-        Lead lead = new Lead();
-        lead.setName(name);
-        lead.setEmail(email);
-        lead.setPhone(phone);
-        lead.setCompany(company);
-        lead.setSource(source);
-        lead.setStatus(status);
-        lead.setScore(score);
-        lead.setOwnerId(ownerId);
-        lead.setOwnerName(ownerName);
-        lead.setCreatedAt(createdAt);
-        lead.setUpdatedAt(updatedAt);
-        return lead;
+    private void removeDemoLeads() {
+        int removed = 0;
+        for (String email : List.of(
+                "john.smith@example.com",
+                "sarah.j@example.com",
+                "ibrahim@solar.ng"
+        )) {
+            List<Lead> matches = leadRepository.findByEmailIgnoreCase(email);
+            if (!matches.isEmpty()) {
+                leadRepository.deleteAll(matches);
+                removed += matches.size();
+            }
+        }
+        if (removed > 0) {
+            log.info("Removed {} demo seed lead(s)", removed);
+        }
     }
 
     private static Ticket demoTicket(String customerId, String customerName, String customerEmail,

@@ -204,17 +204,27 @@ public class SupportDashboardService {
     }
 
     private List<SupportDashboardOverviewResponse.TeamMemberItem> buildTeamAvailability() {
-        List<AgentPresence> all = presenceRepository.findAllByOrderByFullNameAsc();
-        if (all.isEmpty()) {
-            return userRepository.findByRoleIn(List.of("SUPPORT_AGENT", "SUPERVISOR")).stream()
-                    .map(u -> new SupportDashboardOverviewResponse.TeamMemberItem(
-                            u.getId(), u.getFullName(), "offline", "support"))
-                    .toList();
-        }
-        return all.stream()
+        // Support agents only — customers and supervisors must never appear.
+        List<User> staff = userRepository.findByRoleIn(List.of("SUPPORT_AGENT")).stream()
+                .filter(u -> !UserService.isErasedAccount(u))
+                .filter(User::isActive)
+                .sorted(Comparator.comparing(User::getFullName, Comparator.nullsLast(String::compareToIgnoreCase)))
+                .toList();
+
+        Map<String, AgentPresence> presenceByUserId = presenceRepository.findAll().stream()
+                .filter(p -> p.getUserId() != null)
+                .collect(Collectors.toMap(AgentPresence::getUserId, p -> p, (a, b) -> a));
+
+        return staff.stream()
                 .limit(8)
-                .map(p -> new SupportDashboardOverviewResponse.TeamMemberItem(
-                        p.getUserId(), p.getFullName(), p.getStatus(), p.getTeam()))
+                .map(u -> {
+                    AgentPresence presence = presenceByUserId.get(u.getId());
+                    String status = presence != null && presence.getStatus() != null
+                            ? presence.getStatus()
+                            : "offline";
+                    return new SupportDashboardOverviewResponse.TeamMemberItem(
+                            u.getId(), u.getFullName(), status, "support");
+                })
                 .toList();
     }
 

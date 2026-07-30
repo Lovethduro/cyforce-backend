@@ -4,7 +4,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Masks high-sensitivity values in API responses for oversight roles (e.g. ADMIN).
+ * Masks high-sensitivity values in API responses for oversight roles (ADMIN, SUPERVISOR).
+ * Includes card/bank details, emails, phones, and portal tokens.
  * Does not alter stored data — only outbound views.
  */
 public final class SensitiveDataMasker {
@@ -44,7 +45,11 @@ public final class SensitiveDataMasker {
     }
 
     public static boolean shouldMaskForRole(String role) {
-        return role != null && "ADMIN".equalsIgnoreCase(role.trim());
+        if (role == null || role.isBlank()) {
+            return false;
+        }
+        String normalized = role.trim().toUpperCase();
+        return "ADMIN".equals(normalized) || "SUPERVISOR".equals(normalized);
     }
 
     public static String maskEmail(String email) {
