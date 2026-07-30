@@ -6,6 +6,7 @@ import com.cyforce.dto.MfaSetupInitRequest;
 import com.cyforce.dto.MfaSetupVerifyRequest;
 import com.cyforce.dto.OAuthLoginRequest;
 import com.cyforce.dto.RegisterRequest;
+import com.cyforce.exception.LoginGateException;
 import com.cyforce.service.AuthService;
 import com.cyforce.service.EmailService;
 import com.cyforce.service.MfaService;
@@ -64,6 +65,8 @@ public class AuthController {
                     httpRequest.getHeader("User-Agent")
             );
             return ResponseEntity.ok(response);
+        } catch (LoginGateException e) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(e.getBody());
         } catch (RuntimeException e) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(Map.of("error", e.getMessage()));
@@ -126,8 +129,8 @@ public class AuthController {
             userRepository.findByEmailIgnoreCase(request.getEmail()).ifPresent(user ->
                     referralService.applyOnRegistration(
                             user,
-                            stringVal(body.get("referralCode")),
-                            stringVal(body.get("hearAboutUs"))
+                            firstString(body, "referralCode", "referral_code", "discountCode", "discount_code"),
+                            firstString(body, "hearAboutUs", "hear_about_us")
                     )
             );
             return ResponseEntity.ok(response);
@@ -139,6 +142,19 @@ public class AuthController {
 
     private String stringVal(Object raw) {
         return raw == null ? null : raw.toString();
+    }
+
+    private String firstString(Map<String, Object> body, String... keys) {
+        if (body == null || keys == null) {
+            return null;
+        }
+        for (String key : keys) {
+            Object value = body.get(key);
+            if (value != null && !value.toString().isBlank()) {
+                return value.toString().trim();
+            }
+        }
+        return null;
     }
 
     @GetMapping("/test")

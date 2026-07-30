@@ -202,8 +202,21 @@ public class UserService {
         requireStaff(requester);
 
         return userRepository.findTop500ByOrderByCreatedAtDesc().stream()
+                .filter(user -> !isErasedAccount(user))
                 .map(this::toListItem)
                 .collect(Collectors.toList());
+    }
+
+    /** Permanently deleted / GDPR-erased accounts must not appear in management lists. */
+    public static boolean isErasedAccount(User user) {
+        if (user == null) {
+            return true;
+        }
+        if ("DELETED".equalsIgnoreCase(user.getAuthProvider())) {
+            return true;
+        }
+        String email = user.getEmail();
+        return email != null && email.toLowerCase().endsWith("@removed.local");
     }
 
     public UserListItemResponse updateUserStatus(String requesterId, String targetUserId, boolean active) {
@@ -225,7 +238,8 @@ public class UserService {
     public DashboardStatsResponse buildDashboardStatsFast() {
         long totalUsers = userRepository.count();
         long activeUsers = userRepository.countByIsActiveTrue();
-        long pendingApprovals = userRepository.countByIsActiveTrueAndIsEmailVerifiedFalse();
+        // Must match the dashboard pending list (exclude erased / anonymized accounts).
+        long pendingApprovals = findPendingEmailVerificationAccounts().size();
         long mfaEnabledUsers = userRepository.countByMfaEnabledTrue();
         long verifiedUsers = userRepository.countByIsEmailVerifiedTrue();
 
@@ -238,6 +252,7 @@ public class UserService {
         );
 
         List<UserListItemResponse> recentUsers = userRepository.findTop5ByOrderByCreatedAtDesc().stream()
+                .filter(user -> !isErasedAccount(user))
                 .map(this::toListItem)
                 .collect(Collectors.toList());
 
@@ -252,17 +267,26 @@ public class UserService {
         );
     }
 
-    public DashboardStatsResponse buildDashboardStats(List<User> users) {
-        long totalUsers = users.size();
-        long activeUsers = users.stream().filter(User::isActive).count();
-        long pendingApprovals = users.stream().filter(UserService::isPendingAccountApproval).count();
-        long mfaEnabledUsers = users.stream().filter(User::isMfaEnabled).count();
-        long verifiedUsers = users.stream().filter(User::isEmailVerified).count();
+    /** Active, non-erased accounts still waiting on email verification. */
+    public List<User> findPendingEmailVerificationAccounts() {
+        return userRepository.findPendingEmailVerificationCandidates().stream()
+                .filter(UserService::isPendingAccountApproval)
+                .sorted(Comparator.comparing(User::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
+                .collect(Collectors.toList());
+    }
 
-        Map<String, Long> usersByRole = users.stream()
+    public DashboardStatsResponse buildDashboardStats(List<User> users) {
+        List<User> visible = users.stream().filter(u -> !isErasedAccount(u)).toList();
+        long totalUsers = visible.size();
+        long activeUsers = visible.stream().filter(User::isActive).count();
+        long pendingApprovals = visible.stream().filter(UserService::isPendingAccountApproval).count();
+        long mfaEnabledUsers = visible.stream().filter(User::isMfaEnabled).count();
+        long verifiedUsers = visible.stream().filter(User::isEmailVerified).count();
+
+        Map<String, Long> usersByRole = visible.stream()
                 .collect(Collectors.groupingBy(u -> u.getRole() == null ? "UNKNOWN" : u.getRole(), Collectors.counting()));
 
-        List<UserListItemResponse> recentUsers = users.stream()
+        List<UserListItemResponse> recentUsers = visible.stream()
                 .sorted(Comparator.comparing(User::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
                 .limit(5)
                 .map(this::toListItem)
@@ -286,7 +310,10 @@ public class UserService {
 
     /** Active accounts still awaiting email verification (not deactivated users). */
     public static boolean isPendingAccountApproval(User user) {
-        return user != null && user.isActive() && !user.isEmailVerified();
+        return user != null
+                && !isErasedAccount(user)
+                && user.isActive()
+                && !user.isEmailVerified();
     }
 
     public void touchActivity(String userId) {
@@ -350,7 +377,10 @@ public class UserService {
                 user.getId(),
                 user.getFullName(),
                 user.getEmail(),
+                user.getPhone(),
                 user.getRole(),
+                user.getCompanyName(),
+                user.getCustomerType(),
                 user.isActive(),
                 user.isEmailVerified(),
                 user.isMfaEnabled(),

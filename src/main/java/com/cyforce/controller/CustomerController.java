@@ -1,5 +1,6 @@
 package com.cyforce.controller;
 
+import com.cyforce.service.CustomerAccountService;
 import com.cyforce.service.MessagingService;
 import com.cyforce.service.PaymentService;
 import com.cyforce.service.RatingService;
@@ -25,17 +26,20 @@ public class CustomerController {
     private final MessagingService messagingService;
     private final RatingService ratingService;
     private final SupportResponseEstimateService responseEstimateService;
+    private final CustomerAccountService customerAccountService;
 
     public CustomerController(TicketService ticketService,
                               PaymentService paymentService,
                               MessagingService messagingService,
                               RatingService ratingService,
-                              SupportResponseEstimateService responseEstimateService) {
+                              SupportResponseEstimateService responseEstimateService,
+                              CustomerAccountService customerAccountService) {
         this.ticketService = ticketService;
         this.paymentService = paymentService;
         this.messagingService = messagingService;
         this.ratingService = ratingService;
         this.responseEstimateService = responseEstimateService;
+        this.customerAccountService = customerAccountService;
     }
 
     @GetMapping("/dashboard/stats")
@@ -181,6 +185,43 @@ public class CustomerController {
     @GetMapping("/billing/overview")
     public ResponseEntity<?> billingOverview(@RequestHeader("X-User-Id") String userId) {
         return ResponseEntity.ok(paymentService.billingOverview(userId));
+    }
+
+    @PostMapping("/cart/quote")
+    public ResponseEntity<?> quoteCart(@RequestHeader("X-User-Id") String userId,
+                                       @RequestBody Map<String, Object> body) {
+        try {
+            return ResponseEntity.ok(paymentService.quoteCart(userId, body));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /** Temporary self-deactivate. Prefer {@code POST /api/users/me/deactivate}. */
+    @PostMapping("/account/deactivate")
+    public ResponseEntity<?> deactivateOwnAccount(@RequestHeader("X-User-Id") String userId) {
+        try {
+            return ResponseEntity.ok(customerAccountService.deactivateOwnAccount(userId));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /**
+     * Schedules permanent deletion in 30 days. Sign in before then to cancel.
+     * Body: { "confirm": "DELETE" }
+     */
+    @DeleteMapping("/account")
+    public ResponseEntity<?> scheduleOwnDeletion(@RequestHeader("X-User-Id") String userId,
+                                                 @RequestBody(required = false) Map<String, Object> body) {
+        try {
+            String confirm = body != null && body.get("confirm") != null
+                    ? body.get("confirm").toString()
+                    : "DELETE";
+            return ResponseEntity.ok(customerAccountService.scheduleOwnDeletion(userId, confirm));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
     }
 
     @PostMapping("/checkout")

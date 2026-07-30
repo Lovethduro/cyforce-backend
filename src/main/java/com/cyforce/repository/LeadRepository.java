@@ -11,4 +11,5 @@ public interface LeadRepository extends MongoRepository<Lead, String> {
     List<Lead> findByOwnerIdOrderByCreatedAtDesc(String ownerId);
     List<Lead> findAllByOrderByCreatedAtDesc();
     List<Lead> findTop200ByOrderByCreatedAtDesc();
+    List<Lead> findByEmailIgnoreCase(String email);
 }

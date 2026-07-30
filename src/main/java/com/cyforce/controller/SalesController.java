@@ -73,6 +73,44 @@ public class SalesController {
         }
     }
 
+    @GetMapping("/store-orders")
+    public ResponseEntity<?> storeOrders(@RequestHeader("X-User-Id") String userId) {
+        try {
+            return ResponseEntity.ok(salesDashboardService.listStoreOrders(userId));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/customers/{id}/purchases")
+    public ResponseEntity<?> customerPurchases(@RequestHeader("X-User-Id") String userId,
+                                               @PathVariable String id) {
+        try {
+            return ResponseEntity.ok(salesDashboardService.customerPurchaseHistory(userId, id));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/customers/{id}/purchases/report")
+    public ResponseEntity<?> customerPurchasesReport(@RequestHeader("X-User-Id") String userId,
+                                                     @PathVariable String id,
+                                                     @RequestParam(defaultValue = "csv") String format) {
+        try {
+            byte[] report = salesDashboardService.customerPurchaseHistoryReport(userId, id, format);
+            String normalized = format == null ? "csv" : format.trim().toLowerCase();
+            boolean pdf = "pdf".equals(normalized);
+            String filename = "purchase-history-" + id + "-" + java.time.LocalDate.now()
+                    + (pdf ? ".pdf" : ".csv");
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                    .contentType(pdf ? MediaType.APPLICATION_PDF : MediaType.parseMediaType("text/csv"))
+                    .body(report);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
     @PostMapping("/customers")
     public ResponseEntity<?> createCustomer(@RequestHeader("X-User-Id") String userId,
                                             @RequestBody Map<String, String> body) {

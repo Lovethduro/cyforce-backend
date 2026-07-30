@@ -9,4 +9,5 @@ import java.util.List;
 @Repository
 public interface ConversationMessageRepository extends MongoRepository<ConversationMessage, String> {
     List<ConversationMessage> findByConversationIdOrderByCreatedAtAsc(String conversationId);
+    void deleteByConversationId(String conversationId);
 }

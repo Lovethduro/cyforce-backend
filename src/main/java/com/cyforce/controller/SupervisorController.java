@@ -176,7 +176,7 @@ public class SupervisorController {
             if (approval.isPresent()) {
                 return ResponseEntity.ok(supervisorOpsService.reviewApproval(userId, id, false, null));
             }
-            adminService.deleteUser(userId, id);
+            adminService.deactivateUser(userId, id);
             return ResponseEntity.ok(Map.of("message", "Rejected"));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));

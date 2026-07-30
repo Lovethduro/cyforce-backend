@@ -3,6 +3,7 @@ package com.cyforce.controller;
 import com.cyforce.dto.UpdateProfileRequest;
 import com.cyforce.dto.UserListItemResponse;
 import com.cyforce.dto.UserProfileResponse;
+import com.cyforce.service.CustomerAccountService;
 import com.cyforce.service.MfaService;
 import com.cyforce.service.UserService;
 import com.cyforce.util.WebRequestUtils;
@@ -23,10 +24,14 @@ public class UserController {
 
     private final UserService userService;
     private final MfaService mfaService;
+    private final CustomerAccountService customerAccountService;
 
-    public UserController(UserService userService, MfaService mfaService) {
+    public UserController(UserService userService,
+                          MfaService mfaService,
+                          CustomerAccountService customerAccountService) {
         this.userService = userService;
         this.mfaService = mfaService;
+        this.customerAccountService = customerAccountService;
     }
 
     @GetMapping("/me")
@@ -117,6 +122,33 @@ public class UserController {
             return ResponseEntity.ok(updated);
         } catch (RuntimeException e) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /** Temporary self-deactivate. Signing in again reactivates the customer account. */
+    @PostMapping("/me/deactivate")
+    public ResponseEntity<?> deactivateOwnAccount(@RequestHeader("X-User-Id") String userId) {
+        try {
+            return ResponseEntity.ok(customerAccountService.deactivateOwnAccount(userId));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /**
+     * Schedules permanent deletion in 30 days. Sign in before then to cancel.
+     * Body: { "confirm": "DELETE" }
+     */
+    @DeleteMapping("/me")
+    public ResponseEntity<?> scheduleOwnDeletion(@RequestHeader("X-User-Id") String userId,
+                                                 @RequestBody(required = false) Map<String, Object> body) {
+        try {
+            String confirm = body != null && body.get("confirm") != null
+                    ? body.get("confirm").toString()
+                    : "DELETE";
+            return ResponseEntity.ok(customerAccountService.scheduleOwnDeletion(userId, confirm));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
     }
 }

@@ -33,6 +33,7 @@ public class PaymentService {
     private final NotificationService notificationService;
     private final RequestUserService requestUserService;
     private final EmailService emailService;
+    private final ReferralService referralService;
     private final RestClient restClient;
 
     public PaymentService(PaymentProperties properties,
@@ -43,7 +44,8 @@ public class PaymentService {
                           UserRepository userRepository,
                           NotificationService notificationService,
                           RequestUserService requestUserService,
-                          EmailService emailService) {
+                          EmailService emailService,
+                          ReferralService referralService) {
         this.properties = properties;
         this.transactionRepository = transactionRepository;
         this.invoiceRepository = invoiceRepository;
@@ -53,7 +55,23 @@ public class PaymentService {
         this.notificationService = notificationService;
         this.requestUserService = requestUserService;
         this.emailService = emailService;
+        this.referralService = referralService;
         this.restClient = RestClient.create();
+    }
+
+    /**
+     * Calculates cart totals including referral/staff discounts without starting payment.
+     * Safe to call while browsing the cart — does not consume the referral reward.
+     */
+    public Map<String, Object> quoteCart(String userId, Map<String, Object> body) {
+        User user = requestUserService.requireUser(userId);
+        if (!isCustomer(user) && !isStaff(user)) {
+            throw new RuntimeException("Cart pricing is not available for this account");
+        }
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> items = (List<Map<String, Object>>) body.get("items");
+        CartTotals totals = calculateCartTotals(user, items, false);
+        return totals.toResponse();
     }
 
     public Map<String, Object> checkoutCart(String userId, Map<String, Object> body) {
@@ -64,45 +82,123 @@ public class PaymentService {
 
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> items = (List<Map<String, Object>>) body.get("items");
-        if (items == null || items.isEmpty()) {
-            throw new RuntimeException("Cart is empty");
-        }
-
         String provider = stringVal(body.get("provider"), "paystack");
-        long totalKobo = 0;
-        StringBuilder description = new StringBuilder("Cart purchase: ");
 
-        for (Map<String, Object> item : items) {
-            String productId = stringVal(item.get("productId"), null);
-            if (productId == null || productId.isBlank()) {
-                throw new RuntimeException("Invalid cart item");
+        // Consume referral reward only when checkout actually starts.
+        CartTotals totals = calculateCartTotals(user, items, true);
+        deductStock(items);
+
+        Invoice invoice = new Invoice();
+        invoice.setCustomerId(user.getId());
+        invoice.setCustomerName(user.getFullName());
+        invoice.setCustomerEmail(user.getEmail());
+        invoice.setCustomerPhone(user.getPhone());
+        invoice.setCompanyName(user.getCompanyName());
+        invoice.setGuestPurchase(false);
+        invoice.setAmount(totals.totalKobo());
+        invoice.setCurrency("NGN");
+        invoice.setStatus("pending");
+        invoice.setDescription(totals.description());
+        invoice.setDueDate(LocalDateTime.now().plusDays(1));
+        invoice.setCreatedAt(LocalDateTime.now());
+        Invoice savedInvoice = invoiceRepository.save(invoice);
+
+        Map<String, Object> paymentBody = new LinkedHashMap<>();
+        paymentBody.put("amount", totals.totalKobo());
+        paymentBody.put("description", savedInvoice.getDescription());
+        paymentBody.put("invoiceId", savedInvoice.getId());
+
+        Map<String, Object> payment = "flutterwave".equalsIgnoreCase(provider)
+                ? initializeFlutterwave(userId, paymentBody)
+                : initializePaystack(userId, paymentBody);
+
+        Map<String, Object> result = new LinkedHashMap<>(payment);
+        result.putAll(totals.toResponse());
+        result.put("invoiceId", savedInvoice.getId());
+
+        boolean willAutoComplete = Boolean.TRUE.equals(payment.get("autoComplete"));
+        if (!willAutoComplete) {
+            String checkoutMessage = "Your order of ₦" + String.format("%,d", totals.totalKobo() / 100) + " is being processed.";
+            if (totals.referralDiscountPercent() > 0) {
+                checkoutMessage = checkoutMessage + " Referral discount of "
+                        + totals.referralDiscountPercent() + "% was applied.";
             }
-            int quantity = parseQuantity(item.get("quantity"));
-            Product product = productRepository.findById(productId)
-                    .orElseThrow(() -> new RuntimeException("Product not found: " + productId));
-            if (!product.isActive() || !product.isInStock()) {
-                throw new RuntimeException("Product unavailable: " + product.getName());
-            }
-            if (product.getStockQuantity() > 0 && quantity > product.getStockQuantity()) {
-                throw new RuntimeException("Only " + product.getStockQuantity() + " units left for " + product.getName());
-            }
-            long unitPrice = resolveUnitPrice(item, product);
-            long lineKobo = unitPrice * 100L * quantity;
-            totalKobo += lineKobo;
-            description.append(product.getName()).append(" x").append(quantity).append(", ");
+            notificationService.createOnce(
+                    user.getId(),
+                    savedInvoice.getId() + ":checkout",
+                    "Checkout started",
+                    checkoutMessage,
+                    "info"
+            );
         }
 
-        if (totalKobo <= 0) {
-            throw new RuntimeException("Invalid cart total");
-        }
+        return result;
+    }
 
-        long originalTotalKobo = totalKobo;
-        StaffDiscount discount = staffDiscountFor(user);
-        if (discount.percent() > 0) {
-            totalKobo = Math.max(0, totalKobo - discount.amountKobo(originalTotalKobo));
-            description.append(" (staff discount ").append(discount.percent()).append("%)");
-        }
+    /**
+     * Public store checkout without an account. Buyer contact is required so the sale can be tracked.
+     */
+    public Map<String, Object> checkoutGuestCart(Map<String, Object> body) {
+        String name = requireText(body.get("fullName"), "Full name");
+        String email = requireEmail(body.get("email"));
+        String phone = requireText(body.get("phone"), "Phone number");
+        String companyName = optionalText(body.get("companyName"));
+        String deliveryAddress = requireText(body.get("deliveryAddress"), "Delivery address");
+        String provider = stringVal(body.get("provider"), "paystack");
 
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> items = (List<Map<String, Object>>) body.get("items");
+        CartTotals totals = calculateCartTotals(null, items, false);
+        deductStock(items);
+
+        Invoice invoice = new Invoice();
+        invoice.setCustomerId(null);
+        invoice.setCustomerName(name);
+        invoice.setCustomerEmail(email);
+        invoice.setCustomerPhone(phone);
+        invoice.setCompanyName(companyName);
+        invoice.setDeliveryAddress(deliveryAddress);
+        invoice.setGuestPurchase(true);
+        invoice.setAmount(totals.totalKobo());
+        invoice.setCurrency("NGN");
+        invoice.setStatus("pending");
+        invoice.setDescription(totals.description());
+        invoice.setDueDate(LocalDateTime.now().plusDays(1));
+        invoice.setCreatedAt(LocalDateTime.now());
+        Invoice savedInvoice = invoiceRepository.save(invoice);
+
+        Map<String, Object> payment = initializeGuestPayment(
+                email,
+                name,
+                totals.totalKobo(),
+                savedInvoice.getDescription(),
+                savedInvoice.getId(),
+                provider
+        );
+
+        Map<String, Object> result = new LinkedHashMap<>(payment);
+        result.putAll(totals.toResponse());
+        result.put("invoiceId", savedInvoice.getId());
+        result.put("guestCheckout", true);
+
+        String amountPreview = "₦" + String.format("%,d", totals.totalKobo() / 100);
+        userRepository.findAll().stream()
+                .filter(u -> {
+                    String role = u.getRole() == null ? "" : u.getRole().toUpperCase();
+                    return u.isActive() && ("ADMIN".equals(role) || "SALES_AGENT".equals(role) || "SUPERVISOR".equals(role));
+                })
+                .forEach(u -> notificationService.createOnce(
+                        u.getId(),
+                        savedInvoice.getId() + ":website-checkout",
+                        "Website checkout started",
+                        name + " (" + email + ") started a " + amountPreview + " store order.",
+                        "info"
+                ));
+
+        return result;
+    }
+
+    private void deductStock(List<Map<String, Object>> items) {
         for (Map<String, Object> item : items) {
             String productId = stringVal(item.get("productId"), null);
             int quantity = parseQuantity(item.get("quantity"));
@@ -119,47 +215,266 @@ public class PaymentService {
                 }
             });
         }
+    }
 
-        Invoice invoice = new Invoice();
-        invoice.setCustomerId(user.getId());
-        invoice.setCustomerName(user.getFullName());
-        invoice.setAmount(totalKobo);
-        invoice.setCurrency("NGN");
-        invoice.setStatus("pending");
-        invoice.setDescription(description.toString().replaceAll(", $", ""));
-        invoice.setDueDate(LocalDateTime.now().plusDays(1));
-        invoice.setCreatedAt(LocalDateTime.now());
-        Invoice savedInvoice = invoiceRepository.save(invoice);
+    private Map<String, Object> initializeGuestPayment(String email,
+                                                       String name,
+                                                       long amountKobo,
+                                                       String description,
+                                                       String invoiceId,
+                                                       String provider) {
+        boolean flutterwave = "flutterwave".equalsIgnoreCase(provider);
+        String reference = (flutterwave ? "FLW-" : "PSK-")
+                + UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase();
 
-        Map<String, Object> paymentBody = new LinkedHashMap<>();
-        paymentBody.put("amount", totalKobo);
-        paymentBody.put("description", savedInvoice.getDescription());
-        paymentBody.put("invoiceId", savedInvoice.getId());
+        PaymentTransaction tx = new PaymentTransaction();
+        tx.setReference(reference);
+        tx.setProvider(flutterwave ? "flutterwave" : "paystack");
+        tx.setUserId(null);
+        tx.setUserEmail(email);
+        tx.setAmount(amountKobo);
+        tx.setCurrency("NGN");
+        tx.setStatus("pending");
+        tx.setDescription(description);
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("invoiceId", invoiceId != null ? invoiceId : "");
+        metadata.put("guestCheckout", true);
+        metadata.put("buyerName", name != null ? name : "");
+        tx.setMetadata(metadata);
+        tx.setCreatedAt(LocalDateTime.now());
+        transactionRepository.save(tx);
 
-        Map<String, Object> payment = "flutterwave".equalsIgnoreCase(provider)
-                ? initializeFlutterwave(userId, paymentBody)
-                : initializePaystack(userId, paymentBody);
+        String callbackUrl = properties.getCallbackBaseUrl()
+                + "/payment/callback?provider=" + tx.getProvider()
+                + "&reference=" + reference
+                + "&guest=1";
 
-        Map<String, Object> result = new LinkedHashMap<>(payment);
-        result.put("invoiceId", savedInvoice.getId());
-        result.put("totalKobo", totalKobo);
-        result.put("totalNaira", totalKobo / 100);
-        result.put("originalTotalKobo", originalTotalKobo);
-        result.put("staffDiscountPercent", discount.percent());
-        result.put("staffDiscountKobo", Math.max(0, originalTotalKobo - totalKobo));
+        if (flutterwave) {
+            if (!hasFlutterwaveKey()) {
+                tx.setAuthorizationUrl(callbackUrl + "&autoComplete=1");
+                transactionRepository.save(tx);
+                return Map.of(
+                        "provider", "flutterwave",
+                        "reference", reference,
+                        "authorizationUrl", tx.getAuthorizationUrl(),
+                        "publicKey", properties.getFlutterwave().getPublicKey(),
+                        "amount", amountKobo,
+                        "autoComplete", true,
+                        "guestCheckout", true,
+                        "message", "Payment will be completed on return"
+                );
+            }
+            try {
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("tx_ref", reference);
+                payload.put("amount", amountKobo / 100.0);
+                payload.put("currency", "NGN");
+                payload.put("redirect_url", callbackUrl);
+                payload.put("payment_options", "card,ussd,banktransfer");
+                payload.put("customer", Map.of(
+                        "email", email,
+                        "name", name != null && !name.isBlank() ? name : email
+                ));
+                payload.put("customizations", Map.of(
+                        "title", "CyForce",
+                        "description", description
+                ));
+                payload.put("meta", Map.of("invoiceId", invoiceId != null ? invoiceId : "", "guestCheckout", true));
 
-        boolean willAutoComplete = Boolean.TRUE.equals(payment.get("autoComplete"));
-        if (!willAutoComplete) {
-            notificationService.createOnce(
-                    user.getId(),
-                    savedInvoice.getId() + ":checkout",
-                    "Checkout started",
-                    "Your order of ₦" + String.format("%,d", totalKobo / 100) + " is being processed.",
-                    "info"
+                @SuppressWarnings("unchecked")
+                Map<String, Object> response = restClient.post()
+                        .uri(properties.getFlutterwave().getBaseUrl() + "/payments")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + properties.getFlutterwave().getSecretKey())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(payload)
+                        .retrieve()
+                        .body(Map.class);
+
+                String authUrl = extractNested(response, "data", "link");
+                tx.setAuthorizationUrl(authUrl);
+                transactionRepository.save(tx);
+                return Map.of(
+                        "provider", "flutterwave",
+                        "reference", reference,
+                        "authorizationUrl", authUrl != null ? authUrl : callbackUrl,
+                        "publicKey", properties.getFlutterwave().getPublicKey(),
+                        "amount", amountKobo,
+                        "guestCheckout", true
+                );
+            } catch (Exception e) {
+                log.error("Flutterwave guest init failed: {}", e.getMessage());
+                throw new RuntimeException("Flutterwave initialization failed: " + e.getMessage());
+            }
+        }
+
+        if (!hasPaystackKey()) {
+            tx.setAuthorizationUrl(callbackUrl + "&autoComplete=1");
+            transactionRepository.save(tx);
+            return Map.of(
+                    "provider", "paystack",
+                    "reference", reference,
+                    "authorizationUrl", tx.getAuthorizationUrl(),
+                    "publicKey", properties.getPaystack().getPublicKey(),
+                    "amount", amountKobo,
+                    "autoComplete", true,
+                    "guestCheckout", true,
+                    "message", "Payment will be completed on return"
             );
         }
 
-        return result;
+        try {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("email", email);
+            payload.put("amount", amountKobo);
+            payload.put("reference", reference);
+            payload.put("currency", "NGN");
+            payload.put("callback_url", callbackUrl);
+            payload.put("metadata", Map.of(
+                    "invoiceId", invoiceId != null ? invoiceId : "",
+                    "guestCheckout", true,
+                    "buyerName", name != null ? name : ""
+            ));
+
+            @SuppressWarnings("unchecked")
+            Map<String, Object> response = restClient.post()
+                    .uri(properties.getPaystack().getBaseUrl() + "/transaction/initialize")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + properties.getPaystack().getSecretKey())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(payload)
+                    .retrieve()
+                    .body(Map.class);
+
+            String authUrl = extractNested(response, "data", "authorization_url");
+            tx.setAuthorizationUrl(authUrl);
+            transactionRepository.save(tx);
+            return Map.of(
+                    "provider", "paystack",
+                    "reference", reference,
+                    "authorizationUrl", authUrl != null ? authUrl : callbackUrl,
+                    "publicKey", properties.getPaystack().getPublicKey(),
+                    "amount", amountKobo,
+                    "guestCheckout", true
+            );
+        } catch (Exception e) {
+            log.error("Paystack guest init failed: {}", e.getMessage());
+            throw new RuntimeException("Paystack initialization failed: " + e.getMessage());
+        }
+    }
+
+    private CartTotals calculateCartTotals(User user, List<Map<String, Object>> items, boolean consumeReferralDiscount) {
+        if (items == null || items.isEmpty()) {
+            throw new RuntimeException("Cart is empty");
+        }
+
+        long subtotalKobo = 0;
+        StringBuilder description = new StringBuilder("Cart purchase: ");
+        List<Map<String, Object>> lineItems = new ArrayList<>();
+
+        for (Map<String, Object> item : items) {
+            String productId = stringVal(item.get("productId"), null);
+            if (productId == null || productId.isBlank()) {
+                throw new RuntimeException("Invalid cart item");
+            }
+            int quantity = parseQuantity(item.get("quantity"));
+            Product product = productRepository.findById(productId)
+                    .orElseThrow(() -> new RuntimeException("Product not found: " + productId));
+            if (!product.isActive() || !product.isInStock()) {
+                throw new RuntimeException("Product unavailable: " + product.getName());
+            }
+            if (product.getStockQuantity() > 0 && quantity > product.getStockQuantity()) {
+                throw new RuntimeException("Only " + product.getStockQuantity() + " units left for " + product.getName());
+            }
+            long unitPriceNaira = resolveUnitPrice(item, product);
+            long lineKobo = unitPriceNaira * 100L * quantity;
+            subtotalKobo += lineKobo;
+            description.append(product.getName()).append(" x").append(quantity).append(", ");
+
+            Map<String, Object> line = new LinkedHashMap<>();
+            line.put("productId", product.getId());
+            line.put("name", product.getName());
+            line.put("quantity", quantity);
+            line.put("unitPriceNaira", unitPriceNaira);
+            line.put("lineTotalKobo", lineKobo);
+            line.put("lineTotalNaira", lineKobo / 100);
+            lineItems.add(line);
+        }
+
+        if (subtotalKobo <= 0) {
+            throw new RuntimeException("Invalid cart total");
+        }
+
+        long totalKobo = subtotalKobo;
+        StaffDiscount staffDiscount = staffDiscountFor(user);
+        long staffDiscountKobo = 0;
+        if (staffDiscount.percent() > 0) {
+            staffDiscountKobo = staffDiscount.amountKobo(subtotalKobo);
+            totalKobo = Math.max(0, totalKobo - staffDiscountKobo);
+            description.append(" (staff discount ").append(staffDiscount.percent()).append("%)");
+        }
+
+        int referralDiscountPercent = 0;
+        long referralDiscountKobo = 0;
+        String referralDiscountReason = null;
+        if (isCustomer(user) && staffDiscount.percent() == 0) {
+            Optional<ReferralService.PendingReferralDiscount> referralDiscount = consumeReferralDiscount
+                    ? referralService.consumePendingDiscount(user.getId())
+                    : referralService.peekPendingDiscount(user.getId());
+            if (referralDiscount.isPresent()) {
+                ReferralService.PendingReferralDiscount reward = referralDiscount.get();
+                referralDiscountPercent = reward.percent();
+                referralDiscountKobo = reward.amountKobo(totalKobo);
+                totalKobo = Math.max(0, totalKobo - referralDiscountKobo);
+                referralDiscountReason = reward.reason();
+                description.append(" (referral discount ").append(referralDiscountPercent).append("%)");
+            }
+        }
+
+        return new CartTotals(
+                lineItems,
+                subtotalKobo,
+                totalKobo,
+                staffDiscount.percent(),
+                staffDiscountKobo,
+                referralDiscountPercent,
+                referralDiscountKobo,
+                referralDiscountReason,
+                description.toString().replaceAll(", $", "")
+        );
+    }
+
+    private record CartTotals(
+            List<Map<String, Object>> items,
+            long subtotalKobo,
+            long totalKobo,
+            int staffDiscountPercent,
+            long staffDiscountKobo,
+            int referralDiscountPercent,
+            long referralDiscountKobo,
+            String referralDiscountReason,
+            String description
+    ) {
+        Map<String, Object> toResponse() {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("items", items);
+            result.put("subtotalKobo", subtotalKobo);
+            result.put("subtotalNaira", subtotalKobo / 100);
+            result.put("originalTotalKobo", subtotalKobo);
+            result.put("staffDiscountPercent", staffDiscountPercent);
+            result.put("staffDiscountKobo", staffDiscountKobo);
+            result.put("staffDiscountNaira", staffDiscountKobo / 100);
+            result.put("referralDiscountPercent", referralDiscountPercent);
+            result.put("referralDiscountKobo", referralDiscountKobo);
+            result.put("referralDiscountNaira", referralDiscountKobo / 100);
+            result.put("referralDiscountReason", referralDiscountReason);
+            result.put("referralDiscountApplied", referralDiscountPercent > 0);
+            result.put("discountKobo", staffDiscountKobo + referralDiscountKobo);
+            result.put("discountNaira", (staffDiscountKobo + referralDiscountKobo) / 100);
+            result.put("totalKobo", totalKobo);
+            result.put("totalNaira", totalKobo / 100);
+            result.put("currency", "NGN");
+            result.put("description", description);
+            return result;
+        }
     }
 
     private record StaffDiscount(int percent, String label) {
@@ -225,9 +540,10 @@ public class PaymentService {
 
     public Map<String, Object> initializePaystack(String userId, Map<String, Object> body) {
         User user = requestUserService.requireUser(userId);
-        long amount = parseAmount(body.get("amount"));
-        String description = stringVal(body.get("description"), "CyForce payment");
-        String invoiceId = stringVal(body.get("invoiceId"), null);
+        ResolvedInvoicePayment resolved = resolveInvoicePayment(user, body);
+        long amount = resolved.amountKobo();
+        String description = resolved.description();
+        String invoiceId = resolved.invoiceId();
         String reference = "PSK-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase();
 
         PaymentTransaction tx = new PaymentTransaction();
@@ -296,9 +612,10 @@ public class PaymentService {
 
     public Map<String, Object> initializeFlutterwave(String userId, Map<String, Object> body) {
         User user = requestUserService.requireUser(userId);
-        long amount = parseAmount(body.get("amount"));
-        String description = stringVal(body.get("description"), "CyForce payment");
-        String invoiceId = stringVal(body.get("invoiceId"), null);
+        ResolvedInvoicePayment resolved = resolveInvoicePayment(user, body);
+        long amount = resolved.amountKobo();
+        String description = resolved.description();
+        String invoiceId = resolved.invoiceId();
         String reference = "FLW-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase();
 
         PaymentTransaction tx = new PaymentTransaction();
@@ -540,8 +857,8 @@ public class PaymentService {
                 inv.setStatus("paid");
                 inv.setPaidAt(LocalDateTime.now());
                 inv.setPaymentTransactionId(saved.getId());
-                boolean issueSurvey = false;
-                if (tx.getUserId() != null) {
+                boolean issueSurvey = inv.isGuestPurchase();
+                if (!issueSurvey && tx.getUserId() != null) {
                     issueSurvey = userRepository.findById(tx.getUserId())
                             .map(this::isCustomer)
                             .orElse(false);
@@ -577,6 +894,24 @@ public class PaymentService {
                                 }
                             }
                         });
+                    } else if (inv.isGuestPurchase()
+                            && inv.getCustomerEmail() != null
+                            && !inv.getCustomerEmail().isBlank()) {
+                        try {
+                            String surveyUrl = inv.getSurveyToken() != null && !inv.getSurveyToken().isBlank()
+                                    ? properties.getCallbackBaseUrl() + "/survey/purchase/" + inv.getSurveyToken()
+                                    : properties.getCallbackBaseUrl() + "/products";
+                            emailService.sendPurchaseConfirmationEmail(
+                                    inv.getCustomerEmail(),
+                                    inv.getCustomerName() != null ? inv.getCustomerName() : "Customer",
+                                    amountText.isBlank() ? "your order" : amountText,
+                                    inv.getDescription(),
+                                    surveyUrl
+                            );
+                        } catch (RuntimeException e) {
+                            log.warn("Guest purchase confirmation email failed: {}", e.getMessage());
+                        }
+                        notifyStaffOfWebsiteSale(inv, amountText);
                     }
 
                     if (tx.getUserId() != null) {
@@ -587,6 +922,13 @@ public class PaymentService {
                                 "Payment successful" + (amountText.isBlank() ? "." : " — " + amountText + "."),
                                 "success"
                         );
+                        // Referrer earns a next-purchase discount only after this referred customer pays.
+                        try {
+                            referralService.rewardReferrerForPurchase(tx.getUserId());
+                        } catch (RuntimeException e) {
+                            log.warn("Referral purchase reward failed for buyer {}: {}",
+                                    tx.getUserId(), e.getMessage());
+                        }
                     }
 
                     if (inv.getSalesAgentId() != null) {
@@ -637,6 +979,12 @@ public class PaymentService {
                         "Your payment" + (amount.isBlank() ? "" : " of " + amount) + " was completed successfully.",
                         "success"
                 );
+                try {
+                    referralService.rewardReferrerForPurchase(tx.getUserId());
+                } catch (RuntimeException e) {
+                    log.warn("Referral purchase reward failed for buyer {}: {}",
+                            tx.getUserId(), e.getMessage());
+                }
             }
         }
 
@@ -693,6 +1041,28 @@ public class PaymentService {
                 .forEach(u -> notificationService.create(u.getId(), "Product out of stock", message, "warning"));
     }
 
+    private void notifyStaffOfWebsiteSale(Invoice invoice, String amountText) {
+        String buyer = invoice.getCustomerName() != null && !invoice.getCustomerName().isBlank()
+                ? invoice.getCustomerName()
+                : invoice.getCustomerEmail();
+        String details = (buyer != null ? buyer : "A website buyer")
+                + " paid" + (amountText == null || amountText.isBlank() ? "" : " " + amountText)
+                + (invoice.getCustomerEmail() != null ? " (" + invoice.getCustomerEmail() + ")" : "")
+                + ".";
+        userRepository.findAll().stream()
+                .filter(u -> {
+                    String role = u.getRole() == null ? "" : u.getRole().toUpperCase();
+                    return u.isActive() && ("ADMIN".equals(role) || "SALES_AGENT".equals(role) || "SUPERVISOR".equals(role));
+                })
+                .forEach(u -> notificationService.createOnce(
+                        u.getId(),
+                        invoice.getId() + ":website-sale",
+                        "Website sale",
+                        details,
+                        "success"
+                ));
+    }
+
     private boolean hasPaystackKey() {
         String key = properties.getPaystack().getSecretKey();
         return key != null && !key.isBlank() && !key.contains("placeholder");
@@ -702,6 +1072,40 @@ public class PaymentService {
         String key = properties.getFlutterwave().getSecretKey();
         return key != null && !key.isBlank() && !key.contains("placeholder");
     }
+
+    /**
+     * When paying a sales bill/invoice, force the gateway amount and ownership from the
+     * stored invoice so the customer cannot underpay a bargained price.
+     */
+    private ResolvedInvoicePayment resolveInvoicePayment(User user, Map<String, Object> body) {
+        String invoiceId = stringVal(body.get("invoiceId"), null);
+        if (invoiceId == null || invoiceId.isBlank()) {
+            return new ResolvedInvoicePayment(
+                    null,
+                    parseAmount(body.get("amount")),
+                    stringVal(body.get("description"), "CyForce payment")
+            );
+        }
+
+        Invoice invoice = invoiceRepository.findById(invoiceId)
+                .orElseThrow(() -> new RuntimeException("Invoice not found"));
+        if (invoice.getCustomerId() == null || !invoice.getCustomerId().equals(user.getId())) {
+            throw new RuntimeException("This invoice does not belong to your account");
+        }
+        if ("paid".equalsIgnoreCase(invoice.getStatus())) {
+            throw new RuntimeException("This invoice has already been paid");
+        }
+        if (invoice.getAmount() < 100) {
+            throw new RuntimeException("Invoice amount is invalid");
+        }
+
+        String description = invoice.getDescription() != null && !invoice.getDescription().isBlank()
+                ? invoice.getDescription()
+                : stringVal(body.get("description"), "CyForce payment");
+        return new ResolvedInvoicePayment(invoice.getId(), invoice.getAmount(), description);
+    }
+
+    private record ResolvedInvoicePayment(String invoiceId, long amountKobo, String description) {}
 
     private long parseAmount(Object value) {
         if (value == null) throw new RuntimeException("Amount is required");
@@ -717,6 +1121,30 @@ public class PaymentService {
 
     private String stringVal(Object value, String fallback) {
         return value == null ? fallback : value.toString();
+    }
+
+    private String requireText(Object value, String label) {
+        String text = value == null ? "" : value.toString().trim();
+        if (text.isBlank()) {
+            throw new RuntimeException(label + " is required");
+        }
+        return text;
+    }
+
+    private String optionalText(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String text = value.toString().trim();
+        return text.isBlank() ? null : text;
+    }
+
+    private String requireEmail(Object value) {
+        String email = requireText(value, "Email").toLowerCase(Locale.ROOT);
+        if (!email.contains("@") || email.length() < 5) {
+            throw new RuntimeException("Enter a valid email address");
+        }
+        return email;
     }
 
     @SuppressWarnings("unchecked")

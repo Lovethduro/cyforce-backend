@@ -106,6 +106,22 @@ public class User {
 
     private int ratingCount;
 
+    /**
+     * When set, the customer requested permanent deletion.
+     * Account stays recoverable by login until {@link #deletionScheduledAt}.
+     */
+    private LocalDateTime deletionRequestedAt;
+
+    /** After this time a scheduled job permanently erases the account. */
+    @Indexed
+    private LocalDateTime deletionScheduledAt;
+
+    /** Consecutive failed local-password login attempts (reset on success). */
+    private int failedLoginAttempts;
+
+    /** When set and in the future, local password login is blocked. */
+    private LocalDateTime lockedUntil;
+
     public boolean wantsMotivationalMessages() {
         return showMotivationalMessages == null || showMotivationalMessages;
     }

@@ -8,4 +8,6 @@ import java.util.Optional;
 public interface CustomerReferralRepository extends MongoRepository<CustomerReferral, String> {
     Optional<CustomerReferral> findByUserId(String userId);
     Optional<CustomerReferral> findByReferralCodeIgnoreCase(String referralCode);
+    long countByReferredByCodeIgnoreCase(String referredByCode);
+    void deleteByUserId(String userId);
 }

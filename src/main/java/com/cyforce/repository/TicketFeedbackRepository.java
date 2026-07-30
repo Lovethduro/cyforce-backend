@@ -12,4 +12,6 @@ public interface TicketFeedbackRepository extends MongoRepository<TicketFeedback
     List<TicketFeedback> findByAssigneeIdOrderByCreatedAtDesc(String assigneeId);
     List<TicketFeedback> findAllByOrderByCreatedAtDesc();
     List<TicketFeedback> findTop100ByOrderByCreatedAtDesc();
+    List<TicketFeedback> findByCustomerId(String customerId);
+    void deleteByCustomerId(String customerId);
 }

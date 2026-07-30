@@ -14,4 +14,5 @@ public interface UserSessionRepository extends MongoRepository<UserSession, Stri
     long countByUserIdAndActiveTrue(String userId);
     long countByActiveTrue();
     List<UserSession> findTop200ByOrderByStartedAtDesc();
+    void deleteByUserId(String userId);
 }

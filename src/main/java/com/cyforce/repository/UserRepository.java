@@ -2,6 +2,7 @@ package com.cyforce.repository;
 
 import com.cyforce.model.User;
 import org.springframework.data.mongodb.repository.MongoRepository;
+import org.springframework.data.mongodb.repository.Query;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -29,6 +30,17 @@ public interface UserRepository extends MongoRepository<User, String> {
 
     List<User> findTop10ByIsActiveTrueAndIsEmailVerifiedFalseOrderByCreatedAtDesc();
 
+    /**
+     * Active accounts that are not email-verified.
+     * Matches both legacy ({@code isActive}/{@code isEmailVerified}) and
+     * bean-style ({@code active}/{@code emailVerified}) field names in MongoDB.
+     */
+    @Query("{ '$and': [ " +
+            "{ '$or': [ { 'active': true }, { 'isActive': true } ] }, " +
+            "{ '$nor': [ { 'emailVerified': true }, { 'isEmailVerified': true } ] } " +
+            "] }")
+    List<User> findPendingEmailVerificationCandidates();
+
     List<User> findTop5ByOrderByCreatedAtDesc();
 
     List<User> findTop500ByOrderByCreatedAtDesc();
@@ -46,4 +58,6 @@ public interface UserRepository extends MongoRepository<User, String> {
     long countByIsActiveTrueAndIsEmailVerifiedFalse();
 
     long countByRole(String role);
+
+    List<User> findByDeletionScheduledAtLessThanEqual(LocalDateTime deadline);
 }

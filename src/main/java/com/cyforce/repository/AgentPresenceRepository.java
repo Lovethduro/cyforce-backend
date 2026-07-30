@@ -12,4 +12,5 @@ public interface AgentPresenceRepository extends MongoRepository<AgentPresence, 
     Optional<AgentPresence> findByUserId(String userId);
     List<AgentPresence> findByTeam(String team);
     List<AgentPresence> findAllByOrderByFullNameAsc();
+    void deleteByUserId(String userId);
 }

@@ -11,4 +11,6 @@ public interface CustomerFeedbackRepository extends MongoRepository<CustomerFeed
     List<CustomerFeedback> findByAgentIdOrderByCreatedAtDesc(String agentId);
     Optional<CustomerFeedback> findByTypeAndReferenceIdAndCustomerId(String type, String referenceId, String customerId);
     List<CustomerFeedback> findAllByOrderByCreatedAtDesc();
+    List<CustomerFeedback> findByCustomerId(String customerId);
+    void deleteByCustomerId(String customerId);
 }

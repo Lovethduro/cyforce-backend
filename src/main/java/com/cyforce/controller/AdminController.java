@@ -4,6 +4,7 @@ import com.cyforce.model.SystemSettings;
 import com.cyforce.model.User;
 import com.cyforce.service.AdminService;
 import com.cyforce.service.DataManagementService;
+import com.cyforce.service.GdprDeletionService;
 import com.cyforce.service.KnowledgeBaseService;
 import com.cyforce.service.SystemConfigService;
 import com.cyforce.util.WebRequestUtils;
@@ -26,15 +27,18 @@ public class AdminController {
     private final SystemConfigService systemConfigService;
     private final KnowledgeBaseService knowledgeBaseService;
     private final DataManagementService dataManagementService;
+    private final GdprDeletionService gdprDeletionService;
 
     public AdminController(AdminService adminService,
                            SystemConfigService systemConfigService,
                            KnowledgeBaseService knowledgeBaseService,
-                           DataManagementService dataManagementService) {
+                           DataManagementService dataManagementService,
+                           GdprDeletionService gdprDeletionService) {
         this.adminService = adminService;
         this.systemConfigService = systemConfigService;
         this.knowledgeBaseService = knowledgeBaseService;
         this.dataManagementService = dataManagementService;
+        this.gdprDeletionService = gdprDeletionService;
     }
 
     @GetMapping("/dashboard/stats")
@@ -50,6 +54,16 @@ public class AdminController {
     public ResponseEntity<?> users(@RequestHeader("X-User-Id") String userId) {
         try {
             return ResponseEntity.ok(adminService.listUsers(userId));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/users/{id}")
+    public ResponseEntity<?> getUser(@RequestHeader("X-User-Id") String userId,
+                                     @PathVariable String id) {
+        try {
+            return ResponseEntity.ok(adminService.getUser(userId, id));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
@@ -79,16 +93,55 @@ public class AdminController {
         }
     }
 
+    /**
+     * Temporary deactivate — login blocked, personal data retained (reversible).
+     */
+    @PostMapping("/users/{id}/deactivate")
+    public ResponseEntity<?> deactivateUser(@RequestHeader("X-User-Id") String userId,
+                                            @PathVariable String id,
+                                            HttpServletRequest request) {
+        try {
+            adminService.deactivateUser(userId, id, WebRequestUtils.clientIp(request));
+            return ResponseEntity.ok(Map.of("message", "User deactivated"));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/users/{id}/activate")
+    public ResponseEntity<?> activateUser(@RequestHeader("X-User-Id") String userId,
+                                          @PathVariable String id,
+                                          HttpServletRequest request) {
+        try {
+            adminService.activateUser(userId, id, WebRequestUtils.clientIp(request));
+            return ResponseEntity.ok(Map.of("message", "User activated"));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /**
+     * Permanent delete — use for GDPR deletion requests or when the user explicitly
+     * requests removal. Anonymizes/clears personal data (not reversible).
+     */
     @DeleteMapping("/users/{id}")
     public ResponseEntity<?> deleteUser(@RequestHeader("X-User-Id") String userId,
                                         @PathVariable String id,
                                         HttpServletRequest request) {
         try {
-            adminService.deleteUser(userId, id, WebRequestUtils.clientIp(request));
-            return ResponseEntity.ok(Map.of("message", "User deactivated"));
+            return ResponseEntity.ok(gdprDeletionService.eraseUserAsAdmin(
+                    userId, id, WebRequestUtils.clientIp(request)));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
+    }
+
+    /** Alias of permanent delete for GDPR tooling. */
+    @DeleteMapping("/users/{id}/gdpr")
+    public ResponseEntity<?> eraseUserGdpr(@RequestHeader("X-User-Id") String userId,
+                                           @PathVariable String id,
+                                           HttpServletRequest request) {
+        return deleteUser(userId, id, request);
     }
 
     @GetMapping("/tickets")

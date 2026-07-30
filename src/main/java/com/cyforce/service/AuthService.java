@@ -3,6 +3,7 @@ package com.cyforce.service;
 import com.cyforce.dto.AuthResponse;
 import com.cyforce.dto.OAuthUserInfo;
 import com.cyforce.dto.RegisterRequest;
+import com.cyforce.exception.LoginGateException;
 import com.cyforce.model.User;
 import com.cyforce.repository.UserRepository;
 import com.cyforce.util.NameUtils;
@@ -23,6 +24,11 @@ public class AuthService {
     /** Legacy flag — optional org-wide forced MFA setup (not used for login challenges). */
     private static final boolean LOGIN_MFA_ENABLED = false;
 
+    private static final int MAX_LOGIN_ATTEMPTS = 5;
+    private static final int LOCKOUT_MINUTES = 30;
+    private static final String LOCKED_MESSAGE =
+            "Your account has been temporarily locked for 30 minutes due to multiple failed login attempts. Please try again later.";
+
     private static final Map<String, String> ROLE_MAP = Map.of(
             "customer", "CUSTOMER",
             "sales_agent", "SALES_AGENT",
@@ -39,6 +45,7 @@ public class AuthService {
     private final SecurityEventService securityEventService;
     private final MfaService mfaService;
     private final ReferralService referralService;
+    private final CustomerAccountService customerAccountService;
     private final UserSessionService userSessionService;
     private final String appUrl;
 
@@ -50,6 +57,7 @@ public class AuthService {
                        SecurityEventService securityEventService,
                        MfaService mfaService,
                        ReferralService referralService,
+                       CustomerAccountService customerAccountService,
                        UserSessionService userSessionService,
                        @Value("${app.url:http://localhost:3000}") String appUrl) {
         this.userRepository = userRepository;
@@ -60,6 +68,7 @@ public class AuthService {
         this.securityEventService = securityEventService;
         this.mfaService = mfaService;
         this.referralService = referralService;
+        this.customerAccountService = customerAccountService;
         this.userSessionService = userSessionService;
         this.appUrl = appUrl.endsWith("/") ? appUrl.substring(0, appUrl.length() - 1) : appUrl;
     }
@@ -100,7 +109,7 @@ public class AuthService {
     }
 
     public AuthResponse login(String email, String password, String role) {
-        return login(email, password, role, null);
+        return login(email, password, role, null, null);
     }
 
     public AuthResponse login(String email, String password, String role, String clientIp) {
@@ -112,12 +121,16 @@ public class AuthService {
         User user = userRepository.findByEmailIgnoreCase(normalizedEmail).orElse(null);
         if (user == null) {
             securityEventService.recordLoginFailure(normalizedEmail, "Unknown email", clientIp);
-            throw new RuntimeException("Invalid email or password");
+            throw new LoginGateException("Incorrect password. Please try again.", Map.of(
+                    "error", "Incorrect password. Please try again."
+            ));
         }
 
-        if (!user.isActive()) {
-            securityEventService.recordLoginFailure(user.getEmail(), "Deactivated account", clientIp);
-            throw new RuntimeException("Your account has been deactivated. Contact an administrator.");
+        if (UserService.isErasedAccount(user)) {
+            securityEventService.recordLoginFailure(normalizedEmail, "Erased account", clientIp);
+            throw new LoginGateException("Incorrect password. Please try again.", Map.of(
+                    "error", "Incorrect password. Please try again."
+            ));
         }
 
         if (!"LOCAL".equalsIgnoreCase(user.getAuthProvider())) {
@@ -125,9 +138,16 @@ public class AuthService {
             throw new RuntimeException("Please sign in with " + formatProvider(user.getAuthProvider()));
         }
 
+        clearExpiredLock(user);
+
+        if (isLoginLocked(user)) {
+            securityEventService.recordLoginFailure(user.getEmail(), "Account locked", clientIp);
+            throw lockedException(user);
+        }
+
         if (user.getPassword() == null || !passwordService.matchesRaw(password, user.getPassword())) {
-            securityEventService.recordLoginFailure(user.getEmail(), "Invalid password", clientIp);
-            throw new RuntimeException("Invalid email or password");
+            registerFailedPasswordAttempt(user, clientIp);
+            throw passwordFailureException(user);
         }
 
         if (passwordService.needsRehash(user.getPassword())) {
@@ -141,6 +161,15 @@ public class AuthService {
             throw e;
         }
 
+        try {
+            enforceOrRestoreAccountAccess(user, clientIp);
+        } catch (RuntimeException e) {
+            securityEventService.recordLoginFailure(user.getEmail(), e.getMessage(), clientIp);
+            throw e;
+        }
+
+        user.setFailedLoginAttempts(0);
+        user.setLockedUntil(null);
         recordActivity(user);
         userRepository.save(user);
 
@@ -151,6 +180,66 @@ public class AuthService {
 
         securityEventService.recordLoginSuccess(user, clientIp);
         return toAuthResponse(user, "temp-token", clientIp, userAgent);
+    }
+
+    private void registerFailedPasswordAttempt(User user, String clientIp) {
+        int attempts = user.getFailedLoginAttempts() + 1;
+        user.setFailedLoginAttempts(attempts);
+        if (attempts >= MAX_LOGIN_ATTEMPTS) {
+            user.setLockedUntil(LocalDateTime.now().plusMinutes(LOCKOUT_MINUTES));
+        }
+        user.setUpdatedAt(LocalDateTime.now());
+        userRepository.save(user);
+        securityEventService.recordLoginFailure(user.getEmail(),
+                attempts >= MAX_LOGIN_ATTEMPTS ? "Invalid password — locked" : "Invalid password (" + attempts + ")",
+                clientIp);
+    }
+
+    private LoginGateException passwordFailureException(User user) {
+        int attempts = user.getFailedLoginAttempts();
+
+        // 5th failure locks the account; this response still shows the final warning.
+        // The next login attempt receives the 30-minute lockout message.
+        String message = switch (attempts) {
+            case 1, 2, 3 -> "Incorrect password. Please try again.";
+            case 4 -> "Incorrect password. 2 attempts remaining.";
+            case 5 -> "Incorrect password. 1 attempt remaining.";
+            default -> LOCKED_MESSAGE;
+        };
+
+        if (attempts > MAX_LOGIN_ATTEMPTS) {
+            return lockedException(user);
+        }
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("error", message);
+        body.put("failedAttempts", attempts);
+        body.put("attemptsRemaining", Math.max(0, MAX_LOGIN_ATTEMPTS - attempts));
+        return new LoginGateException(message, body);
+    }
+
+    private LoginGateException lockedException(User user) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("error", LOCKED_MESSAGE);
+        body.put("locked", true);
+        body.put("lockMinutes", LOCKOUT_MINUTES);
+        if (user.getLockedUntil() != null) {
+            body.put("lockedUntil", user.getLockedUntil().toString());
+        }
+        return new LoginGateException(LOCKED_MESSAGE, body);
+    }
+
+    private boolean isLoginLocked(User user) {
+        return user.getLockedUntil() != null && user.getLockedUntil().isAfter(LocalDateTime.now());
+    }
+
+    private void clearExpiredLock(User user) {
+        if (user.getLockedUntil() != null && !user.getLockedUntil().isAfter(LocalDateTime.now())) {
+            user.setLockedUntil(null);
+            user.setFailedLoginAttempts(0);
+            user.setUpdatedAt(LocalDateTime.now());
+            userRepository.save(user);
+        }
     }
 
     public AuthResponse verifyMfaLogin(String challengeToken, String code) {
@@ -203,12 +292,13 @@ public class AuthService {
         User user = userRepository.findByVerificationToken(token)
                 .orElseThrow(() -> new RuntimeException("Invalid or expired verification link"));
 
-        if (user.getVerificationTokenExpiryDate().isBefore(LocalDateTime.now())) {
-            throw new RuntimeException("Verification link has expired. Please request a new one.");
-        }
-
         if (user.isEmailVerified()) {
             return "Email already verified";
+        }
+
+        LocalDateTime expiry = user.getVerificationTokenExpiryDate();
+        if (expiry == null || expiry.isBefore(LocalDateTime.now())) {
+            throw new RuntimeException("Verification link has expired. Please request a new one.");
         }
 
         user.setEmailVerified(true);
@@ -261,8 +351,8 @@ public class AuthService {
         String phone = stringVal(body.get("phone"));
         String customerType = stringVal(body.get("customerType")).toLowerCase();
         String companyName = stringVal(body.get("companyName"));
-        String hearAboutUs = stringVal(body.get("hearAboutUs"));
-        String referralCode = stringVal(body.get("referralCode"));
+        String hearAboutUs = firstNonBlank(body, "hearAboutUs", "hear_about_us");
+        String referralCode = firstNonBlank(body, "referralCode", "referral_code", "discountCode", "discount_code");
 
         if (phone.isBlank()) {
             throw new RuntimeException("Phone number is required");
@@ -310,10 +400,6 @@ public class AuthService {
             user.setUpdatedAt(LocalDateTime.now());
             user = userRepository.save(user);
         } else {
-            if (!user.isActive()) {
-                throw new RuntimeException("Your account has been deactivated. Contact an administrator.");
-            }
-
             if (!userInfo.getProvider().equalsIgnoreCase(user.getAuthProvider())
                     && !"LOCAL".equalsIgnoreCase(user.getAuthProvider())) {
                 throw new RuntimeException("This email is linked to a different sign-in method");
@@ -324,6 +410,7 @@ public class AuthService {
             user.setFullName(userInfo.getFullName());
             user.setEmailVerified(true);
             user.setUpdatedAt(LocalDateTime.now());
+            enforceOrRestoreAccountAccess(user, clientIp);
             userRepository.save(user);
         }
 
@@ -383,6 +470,20 @@ public class AuthService {
         user.setLastLoginAt(now);
         user.setLastActivityAt(now);
         user.setUpdatedAt(now);
+    }
+
+    /**
+     * Customers may reactivate a deactivated account (or cancel a pending deletion)
+     * by signing in. Staff accounts remain blocked when inactive.
+     */
+    private void enforceOrRestoreAccountAccess(User user, String clientIp) {
+        if ("CUSTOMER".equalsIgnoreCase(user.getRole())) {
+            customerAccountService.restoreCustomerAccessIfAllowed(user);
+            return;
+        }
+        if (!user.isActive()) {
+            throw new RuntimeException("Your account has been deactivated. Contact an administrator.");
+        }
     }
 
     private AuthResponse toAuthResponse(User user, String token, String clientIp, String userAgent) {
@@ -448,6 +549,19 @@ public class AuthService {
         return value == null ? "" : value.toString().trim();
     }
 
+    private String firstNonBlank(Map<String, Object> body, String... keys) {
+        if (body == null || keys == null) {
+            return "";
+        }
+        for (String key : keys) {
+            Object value = body.get(key);
+            if (value != null && !value.toString().isBlank()) {
+                return value.toString().trim();
+            }
+        }
+        return "";
+    }
+
     private String requireInternationalPhone(String phone) {
         String normalized = phone.replace(" ", "");
         if (!normalized.startsWith("+")) {
@@ -484,7 +598,11 @@ public class AuthService {
         }
 
         userRepository.findByEmailIgnoreCase(normalizedEmail).ifPresent(user -> {
-            if (!user.isActive() || !"LOCAL".equalsIgnoreCase(user.getAuthProvider())) {
+            // Customers may reset while deactivated / in deletion grace so they can sign in again.
+            boolean customerRecoverable = "CUSTOMER".equalsIgnoreCase(user.getRole())
+                    && !UserService.isErasedAccount(user);
+            if ((!user.isActive() && !customerRecoverable)
+                    || !"LOCAL".equalsIgnoreCase(user.getAuthProvider())) {
                 return;
             }
             String token = UUID.randomUUID().toString();

@@ -84,6 +84,15 @@ public class AdminService {
         return userService.listUsers(userId);
     }
 
+    public UserListItemResponse getUser(String adminId, String targetId) {
+        requestUserService.requireRole(requestUserService.requireUser(adminId), "ADMIN", "SUPERVISOR");
+        User target = requestUserService.requireUser(targetId);
+        if (UserService.isErasedAccount(target)) {
+            throw new RuntimeException("User not found");
+        }
+        return userService.toListItem(target);
+    }
+
     public User createUser(String adminId, Map<String, String> body) {
         return createUser(adminId, body, null);
     }
@@ -147,8 +156,12 @@ public class AdminService {
         if (body.get("emailVerified") != null) {
             boolean verified = Boolean.parseBoolean(body.get("emailVerified"));
             user.setEmailVerified(verified);
-            if (verified && user.getEmailVerifiedAt() == null) {
-                user.setEmailVerifiedAt(LocalDateTime.now());
+            if (verified) {
+                if (user.getEmailVerifiedAt() == null) {
+                    user.setEmailVerifiedAt(LocalDateTime.now());
+                }
+                user.setVerificationToken(null);
+                user.setVerificationTokenExpiryDate(null);
             }
         }
         if (body.get("password") != null && !body.get("password").isBlank()) {
@@ -161,21 +174,49 @@ public class AdminService {
         return saved;
     }
 
-    public void deleteUser(String adminId, String targetId) {
-        deleteUser(adminId, targetId, null);
+    /**
+     * Temporarily deactivates an account (login blocked, data retained).
+     * Reversible via activate / status update. For permanent removal use
+     * {@link GdprDeletionService}.
+     */
+    public void deactivateUser(String adminId, String targetId) {
+        deactivateUser(adminId, targetId, null);
     }
 
+    /** @deprecated use {@link #deactivateUser(String, String, String)} */
+    public void deleteUser(String adminId, String targetId) {
+        deactivateUser(adminId, targetId, null);
+    }
+
+    /** @deprecated use {@link #deactivateUser(String, String, String)} */
     public void deleteUser(String adminId, String targetId, String clientIp) {
+        deactivateUser(adminId, targetId, clientIp);
+    }
+
+    public void deactivateUser(String adminId, String targetId, String clientIp) {
         User admin = requestUserService.requireUser(adminId);
         requestUserService.requireRole(admin, "ADMIN");
         if (admin.getId().equals(targetId)) {
-            throw new RuntimeException("You cannot delete your own account");
+            throw new RuntimeException("You cannot deactivate your own account");
         }
         User user = requestUserService.requireUser(targetId);
+        if (!user.isActive()) {
+            throw new RuntimeException("User is already deactivated");
+        }
         user.setActive(false);
         user.setUpdatedAt(LocalDateTime.now());
         userRepository.save(user);
         auditLogService.log(admin, "USER_DEACTIVATE", "User Management", user.getEmail(), clientIp);
+    }
+
+    public void activateUser(String adminId, String targetId, String clientIp) {
+        User admin = requestUserService.requireUser(adminId);
+        requestUserService.requireRole(admin, "ADMIN");
+        User user = requestUserService.requireUser(targetId);
+        user.setActive(true);
+        user.setUpdatedAt(LocalDateTime.now());
+        userRepository.save(user);
+        auditLogService.log(admin, "USER_ACTIVATE", "User Management", user.getEmail(), clientIp);
     }
 
     public List<Ticket> allTickets(String userId) {
@@ -288,9 +329,9 @@ public class AdminService {
 
         var metrics = systemMetricsService.getDashboardMetricsBundle();
 
-        List<UserListItemResponse> pendingUsers = userRepository
-                .findTop10ByIsActiveTrueAndIsEmailVerifiedFalseOrderByCreatedAtDesc()
+        List<UserListItemResponse> pendingUsers = userService.findPendingEmailVerificationAccounts()
                 .stream()
+                .limit(10)
                 .map(userService::toListItem)
                 .toList();
 

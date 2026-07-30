@@ -11,4 +11,5 @@ public interface TicketMessageRepository extends MongoRepository<TicketMessage, 
     List<TicketMessage> findByTicketIdOrderByCreatedAtAsc(String ticketId);
     List<TicketMessage> findByTicketIdInOrderByCreatedAtAsc(List<String> ticketIds);
     List<TicketMessage> findTop5ByAuthorIdOrderByCreatedAtDesc(String authorId);
+    void deleteByTicketId(String ticketId);
 }

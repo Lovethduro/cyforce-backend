@@ -17,6 +17,13 @@ public class Invoice {
     private String id;
     private String customerId;
     private String customerName;
+    /** Buyer contact for guest store purchases (and optional enrichment for registered buyers). */
+    private String customerEmail;
+    private String customerPhone;
+    private String companyName;
+    private String deliveryAddress;
+    /** True when the buyer checked out without a CyForce account. */
+    private boolean guestPurchase;
     private String salesAgentId;
     private String salesAgentName;
     private String conversationId;

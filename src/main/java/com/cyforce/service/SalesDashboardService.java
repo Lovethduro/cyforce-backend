@@ -4,11 +4,13 @@ import com.cyforce.dto.SalesDashboardOverviewResponse;
 import com.cyforce.model.Conversation;
 import com.cyforce.model.Invoice;
 import com.cyforce.model.Lead;
+import com.cyforce.model.PaymentTransaction;
 import com.cyforce.model.Ticket;
 import com.cyforce.model.User;
 import com.cyforce.repository.ConversationRepository;
 import com.cyforce.repository.InvoiceRepository;
 import com.cyforce.repository.LeadRepository;
+import com.cyforce.repository.PaymentTransactionRepository;
 import com.cyforce.repository.TicketRepository;
 import com.cyforce.repository.UserRepository;
 import org.springframework.stereotype.Service;
@@ -41,6 +43,7 @@ public class SalesDashboardService {
     private final UserRepository userRepository;
     private final ConversationRepository conversationRepository;
     private final InvoiceRepository invoiceRepository;
+    private final PaymentTransactionRepository paymentTransactionRepository;
     private final TicketRepository ticketRepository;
     private final PasswordService passwordService;
     private final EmailService emailService;
@@ -52,6 +55,7 @@ public class SalesDashboardService {
                                  UserRepository userRepository,
                                  ConversationRepository conversationRepository,
                                  InvoiceRepository invoiceRepository,
+                                 PaymentTransactionRepository paymentTransactionRepository,
                                  TicketRepository ticketRepository,
                                  PasswordService passwordService,
                                  EmailService emailService,
@@ -62,6 +66,7 @@ public class SalesDashboardService {
         this.userRepository = userRepository;
         this.conversationRepository = conversationRepository;
         this.invoiceRepository = invoiceRepository;
+        this.paymentTransactionRepository = paymentTransactionRepository;
         this.ticketRepository = ticketRepository;
         this.passwordService = passwordService;
         this.emailService = emailService;
@@ -232,23 +237,74 @@ public class SalesDashboardService {
                 .filter(t -> t.getCustomerId() != null && !t.getCustomerId().isBlank())
                 .collect(Collectors.groupingBy(Ticket::getCustomerId));
 
-        Map<String, List<Invoice>> invoicesByCustomer = invoiceRepository.findAll().stream()
+        List<Invoice> allInvoices = invoiceRepository.findAll();
+
+        Map<String, List<Invoice>> invoicesByCustomer = allInvoices.stream()
                 .filter(inv -> inv.getCustomerId() != null && !inv.getCustomerId().isBlank())
                 .collect(Collectors.groupingBy(Invoice::getCustomerId));
+
+        Map<String, List<Invoice>> websiteSalesByEmail = allInvoices.stream()
+                .filter(this::isWebsiteStoreSale)
+                .filter(inv -> inv.getCustomerEmail() != null && !inv.getCustomerEmail().isBlank())
+                .collect(Collectors.groupingBy(inv -> inv.getCustomerEmail().toLowerCase(Locale.ROOT)));
 
         Map<String, List<Conversation>> conversationsByCustomer = conversationRepository.findAll().stream()
                 .filter(c -> c.getCustomerId() != null && !c.getCustomerId().isBlank())
                 .collect(Collectors.groupingBy(Conversation::getCustomerId));
 
-        return userRepository.findAll().stream()
+        List<Map<String, Object>> registered = userRepository.findAll().stream()
                 .filter(u -> "CUSTOMER".equalsIgnoreCase(u.getRole()))
+                .filter(u -> !UserService.isErasedAccount(u))
                 .sorted(Comparator.comparing(User::getFullName, Comparator.nullsLast(String::compareToIgnoreCase)))
-                .map(customer -> toCustomerRow(
-                        customer,
-                        ticketsByCustomer.getOrDefault(customer.getId(), List.of()),
-                        invoicesByCustomer.getOrDefault(customer.getId(), List.of()),
-                        conversationsByCustomer.getOrDefault(customer.getId(), List.of())
-                ))
+                .map(customer -> {
+                    List<Invoice> owned = new ArrayList<>(
+                            invoicesByCustomer.getOrDefault(customer.getId(), List.of()));
+                    String email = customer.getEmail() != null
+                            ? customer.getEmail().toLowerCase(Locale.ROOT)
+                            : "";
+                    if (!email.isBlank()) {
+                        for (Invoice webSale : websiteSalesByEmail.getOrDefault(email, List.of())) {
+                            if (owned.stream().noneMatch(inv -> Objects.equals(inv.getId(), webSale.getId()))) {
+                                owned.add(webSale);
+                            }
+                        }
+                    }
+                    return toCustomerRow(
+                            customer,
+                            ticketsByCustomer.getOrDefault(customer.getId(), List.of()),
+                            owned,
+                            conversationsByCustomer.getOrDefault(customer.getId(), List.of())
+                    );
+                })
+                .collect(Collectors.toList());
+
+        Set<String> registeredEmails = registered.stream()
+                .map(row -> stringValue(row.get("email")).toLowerCase(Locale.ROOT))
+                .filter(email -> !email.isBlank())
+                .collect(Collectors.toSet());
+
+        List<Map<String, Object>> guests = websiteSalesByEmail.entrySet().stream()
+                .filter(entry -> !registeredEmails.contains(entry.getKey()))
+                .map(entry -> toGuestCustomerRow(entry.getKey(), entry.getValue()))
+                .sorted(Comparator.comparing(row -> stringValue(row.get("name")), String.CASE_INSENSITIVE_ORDER))
+                .toList();
+
+        List<Map<String, Object>> combined = new ArrayList<>(registered);
+        combined.addAll(guests);
+        return combined;
+    }
+
+    /**
+     * Every website/store checkout (guest or anonymous buyer details), newest first.
+     */
+    public List<Map<String, Object>> listStoreOrders(String staffId) {
+        User staff = requestUserService.requireUser(staffId);
+        requestUserService.requireRole(staff, "SALES_AGENT", "ADMIN", "SUPERVISOR", "SUPPORT_AGENT");
+
+        return invoiceRepository.findAll().stream()
+                .filter(this::isWebsiteStoreSale)
+                .sorted(Comparator.comparing(Invoice::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())))
+                .map(this::toStoreOrderRow)
                 .collect(Collectors.toList());
     }
 
@@ -284,6 +340,137 @@ public class SalesDashboardService {
             return auditReportService.toTablePdf("Customer Report", headers, rows);
         }
         return auditReportService.toTableCsv("Customer Report", headers, rows);
+    }
+
+    /**
+     * Full purchase history for a customer (invoices + payment transactions).
+     * Visible to sales, support, supervisors, and admins.
+     */
+    public Map<String, Object> customerPurchaseHistory(String staffId, String customerId) {
+        User staff = requestUserService.requireUser(staffId);
+        requestUserService.requireRole(staff, "SALES_AGENT", "ADMIN", "SUPERVISOR", "SUPPORT_AGENT");
+
+        if (isGuestCustomerId(customerId)) {
+            return guestPurchaseHistory(guestEmailFromId(customerId));
+        }
+
+        User customer = userRepository.findById(customerId)
+                .orElseThrow(() -> new RuntimeException("Customer not found"));
+        if (!"CUSTOMER".equalsIgnoreCase(customer.getRole())) {
+            throw new RuntimeException("Purchase history is only available for customer accounts");
+        }
+        if (UserService.isErasedAccount(customer)) {
+            throw new RuntimeException("Customer not found");
+        }
+
+        List<Invoice> invoices = new ArrayList<>(
+                invoiceRepository.findByCustomerIdOrderByCreatedAtDesc(customerId));
+        if (customer.getEmail() != null && !customer.getEmail().isBlank()) {
+            for (Invoice webSale : invoiceRepository
+                    .findByCustomerEmailIgnoreCaseOrderByCreatedAtDesc(customer.getEmail())) {
+                if (isWebsiteStoreSale(webSale)
+                        && invoices.stream().noneMatch(inv -> Objects.equals(inv.getId(), webSale.getId()))) {
+                    invoices.add(webSale);
+                }
+            }
+            invoices.sort(Comparator.comparing(Invoice::getCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())));
+        }
+        List<PaymentTransaction> transactions =
+                paymentTransactionRepository.findByUserIdOrderByCreatedAtDesc(customerId);
+
+        return buildPurchaseHistory(
+                customer.getId(),
+                customer.getFullName(),
+                customer.getEmail(),
+                invoices,
+                transactions
+        );
+    }
+
+    public byte[] customerPurchaseHistoryReport(String staffId, String customerId, String format) {
+        User staff = requestUserService.requireUser(staffId);
+        requestUserService.requireRole(staff, "SALES_AGENT", "ADMIN", "SUPERVISOR", "SUPPORT_AGENT");
+
+        String customerLabel;
+        List<Invoice> invoices;
+        List<PaymentTransaction> transactions;
+
+        if (isGuestCustomerId(customerId)) {
+            String email = guestEmailFromId(customerId);
+            invoices = invoiceRepository.findByCustomerEmailIgnoreCaseOrderByCreatedAtDesc(email).stream()
+                    .filter(this::isWebsiteStoreSale)
+                    .toList();
+            if (invoices.isEmpty()) {
+                throw new RuntimeException("Guest buyer not found");
+            }
+            customerLabel = invoices.get(0).getCustomerName() != null
+                    ? invoices.get(0).getCustomerName()
+                    : email;
+            transactions = List.of();
+        } else {
+            User customer = userRepository.findById(customerId)
+                    .orElseThrow(() -> new RuntimeException("Customer not found"));
+            if (!"CUSTOMER".equalsIgnoreCase(customer.getRole()) || UserService.isErasedAccount(customer)) {
+                throw new RuntimeException("Customer not found");
+            }
+            customerLabel = customer.getFullName() != null && !customer.getFullName().isBlank()
+                    ? customer.getFullName()
+                    : customer.getEmail();
+            invoices = invoiceRepository.findByCustomerIdOrderByCreatedAtDesc(customerId);
+            transactions = paymentTransactionRepository.findByUserIdOrderByCreatedAtDesc(customerId);
+        }
+
+        long lifetimeKobo = invoices.stream()
+                .filter(i -> "paid".equalsIgnoreCase(i.getStatus()))
+                .mapToLong(Invoice::getAmount)
+                .sum();
+
+        String[] headers = {
+                "Type", "Description", "Amount", "Status", "Reference", "Provider",
+                "Due Date", "Paid At", "Created At"
+        };
+        List<String[]> rows = new ArrayList<>();
+        for (Invoice invoice : invoices) {
+            rows.add(new String[] {
+                    "Invoice",
+                    stringValue(invoice.getDescription()),
+                    formatReportAmount(invoice.getAmount()),
+                    stringValue(invoice.getStatus()),
+                    stringValue(invoice.getPaymentTransactionId() != null
+                            ? invoice.getPaymentTransactionId()
+                            : invoice.getId()),
+                    "",
+                    formatReportDateTime(invoice.getDueDate()),
+                    formatReportDateTime(invoice.getPaidAt()),
+                    formatReportDateTime(invoice.getCreatedAt()),
+            });
+        }
+        for (PaymentTransaction tx : transactions) {
+            rows.add(new String[] {
+                    "Transaction",
+                    stringValue(tx.getDescription()),
+                    formatReportAmount(tx.getAmount()),
+                    stringValue(tx.getStatus()),
+                    stringValue(tx.getReference()),
+                    stringValue(tx.getProvider()),
+                    "",
+                    formatReportDateTime(tx.getVerifiedAt()),
+                    formatReportDateTime(tx.getCreatedAt()),
+            });
+        }
+
+        String title = "Purchase History - " + customerLabel
+                + " | Lifetime Value " + formatLifetimeValue(lifetimeKobo);
+
+        String normalized = normalizeReportFormat(format);
+        auditLogService.log(staff, "REPORT_GENERATED", "Customer Management",
+                "Purchase history export " + normalized.toUpperCase()
+                        + " for " + customerLabel + " (" + rows.size() + " records)");
+
+        if ("pdf".equals(normalized)) {
+            return auditReportService.toTablePdf(title, headers, rows);
+        }
+        return auditReportService.toTableCsv(title, headers, rows);
     }
 
     public Map<String, Object> createCustomer(String userId, Map<String, String> body) {
@@ -366,7 +553,150 @@ public class SalesDashboardService {
         row.put("memberSince", customer.getCreatedAt() != null
                 ? customer.getCreatedAt().format(DateTimeFormatter.ofPattern("MMM d, yyyy"))
                 : null);
+        row.put("guest", false);
         return row;
+    }
+
+    private Map<String, Object> toGuestCustomerRow(String email, List<Invoice> invoices) {
+        Invoice latest = invoices.stream()
+                .max(Comparator.comparing(Invoice::getCreatedAt, Comparator.nullsLast(Comparator.naturalOrder())))
+                .orElse(null);
+        long lifetimeKobo = invoices.stream()
+                .filter(inv -> "paid".equalsIgnoreCase(inv.getStatus()))
+                .mapToLong(Invoice::getAmount)
+                .sum();
+        LocalDateTime lastContact = latest != null
+                ? (latest.getPaidAt() != null ? latest.getPaidAt() : latest.getCreatedAt())
+                : null;
+
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", guestCustomerId(email));
+        row.put("name", latest != null && latest.getCustomerName() != null
+                ? latest.getCustomerName()
+                : email);
+        row.put("email", email);
+        row.put("phone", latest != null ? latest.getCustomerPhone() : null);
+        row.put("company", latest != null && latest.getCompanyName() != null && !latest.getCompanyName().isBlank()
+                ? latest.getCompanyName()
+                : "—");
+        row.put("type", "Guest");
+        row.put("status", lifetimeKobo > 0 ? "active" : "inactive");
+        row.put("tickets", 0);
+        row.put("lifetimeValueKobo", lifetimeKobo);
+        row.put("lifetimeValue", formatLifetimeValue(lifetimeKobo));
+        row.put("lastContact", formatLastContact(lastContact));
+        row.put("lastContactAt", lastContact);
+        row.put("avatarUrl", null);
+        row.put("memberSince", latest != null && latest.getCreatedAt() != null
+                ? latest.getCreatedAt().format(DateTimeFormatter.ofPattern("MMM d, yyyy"))
+                : null);
+        row.put("guest", true);
+        row.put("deliveryAddress", latest != null ? latest.getDeliveryAddress() : null);
+        return row;
+    }
+
+    private Map<String, Object> guestPurchaseHistory(String email) {
+        List<Invoice> invoices = invoiceRepository.findByCustomerEmailIgnoreCaseOrderByCreatedAtDesc(email).stream()
+                .filter(this::isWebsiteStoreSale)
+                .toList();
+        if (invoices.isEmpty()) {
+            throw new RuntimeException("Guest buyer not found");
+        }
+        Invoice sample = invoices.get(0);
+        return buildPurchaseHistory(
+                guestCustomerId(email),
+                sample.getCustomerName(),
+                email,
+                invoices,
+                List.of()
+        );
+    }
+
+    private Map<String, Object> buildPurchaseHistory(String customerId,
+                                                     String customerName,
+                                                     String customerEmail,
+                                                     List<Invoice> invoices,
+                                                     List<PaymentTransaction> transactions) {
+        long paidCount = invoices.stream().filter(i -> "paid".equalsIgnoreCase(i.getStatus())).count();
+        long pendingCount = invoices.stream()
+                .filter(i -> "pending".equalsIgnoreCase(i.getStatus()) || "unpaid".equalsIgnoreCase(i.getStatus()))
+                .count();
+        long lifetimeKobo = invoices.stream()
+                .filter(i -> "paid".equalsIgnoreCase(i.getStatus()))
+                .mapToLong(Invoice::getAmount)
+                .sum();
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("customerId", customerId);
+        result.put("customerName", customerName);
+        result.put("customerEmail", customerEmail);
+        result.put("lifetimeValue", formatLifetimeValue(lifetimeKobo));
+        result.put("lifetimeValueKobo", lifetimeKobo);
+        result.put("paidCount", paidCount);
+        result.put("pendingCount", pendingCount);
+        result.put("invoiceCount", invoices.size());
+        result.put("invoices", invoices);
+        result.put("transactions", transactions);
+        result.put("guest", isGuestCustomerId(customerId));
+        return result;
+    }
+
+    /**
+     * Website/store sale: guest checkout flag, or anonymous invoice with buyer email
+     * and no sales-chat attribution.
+     */
+    private boolean isWebsiteStoreSale(Invoice invoice) {
+        if (invoice == null) {
+            return false;
+        }
+        if (invoice.isGuestPurchase()) {
+            return true;
+        }
+        boolean noAccount = invoice.getCustomerId() == null || invoice.getCustomerId().isBlank();
+        boolean hasBuyerEmail = invoice.getCustomerEmail() != null && !invoice.getCustomerEmail().isBlank();
+        boolean notSalesDeal = (invoice.getSalesAgentId() == null || invoice.getSalesAgentId().isBlank())
+                && (invoice.getConversationId() == null || invoice.getConversationId().isBlank());
+        return noAccount && hasBuyerEmail && notSalesDeal;
+    }
+
+    private Map<String, Object> toStoreOrderRow(Invoice invoice) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", invoice.getId());
+        row.put("customerName", invoice.getCustomerName());
+        row.put("customerEmail", invoice.getCustomerEmail());
+        row.put("customerPhone", invoice.getCustomerPhone());
+        row.put("companyName", invoice.getCompanyName());
+        row.put("deliveryAddress", invoice.getDeliveryAddress());
+        row.put("description", invoice.getDescription());
+        row.put("amount", invoice.getAmount());
+        row.put("amountLabel", formatLifetimeValue(invoice.getAmount()));
+        row.put("status", invoice.getStatus());
+        row.put("guestPurchase", invoice.isGuestPurchase() || isWebsiteStoreSale(invoice));
+        row.put("createdAt", invoice.getCreatedAt());
+        row.put("paidAt", invoice.getPaidAt());
+        row.put("buyerId", invoice.getCustomerEmail() != null && !invoice.getCustomerEmail().isBlank()
+                ? guestCustomerId(invoice.getCustomerEmail())
+                : null);
+        return row;
+    }
+
+    private static boolean isGuestCustomerId(String customerId) {
+        return customerId != null && customerId.startsWith("guest:");
+    }
+
+    private static String guestCustomerId(String email) {
+        return "guest:" + email.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private static String guestEmailFromId(String customerId) {
+        if (!isGuestCustomerId(customerId)) {
+            throw new RuntimeException("Invalid guest buyer id");
+        }
+        String email = customerId.substring("guest:".length()).trim().toLowerCase(Locale.ROOT);
+        if (email.isBlank()) {
+            throw new RuntimeException("Invalid guest buyer id");
+        }
+        return email;
     }
 
     private LocalDateTime resolveLastContact(User customer,
@@ -636,6 +966,14 @@ public class SalesDashboardService {
             throw new RuntimeException("Unsupported report format. Use csv or pdf.");
         }
         return value;
+    }
+
+    private String formatReportAmount(long kobo) {
+        return String.format(Locale.US, "₦%,.2f", kobo / 100.0);
+    }
+
+    private String formatReportDateTime(LocalDateTime value) {
+        return value == null ? "" : value.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME);
     }
 
     private String stringValue(Object value) {

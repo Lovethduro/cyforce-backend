@@ -20,7 +20,8 @@ public class AuditLogService {
             "PASSWORD_RESET",
             "PASSWORD_CHANGED",
             "MFA_ENABLED",
-            "MFA_DISABLED"
+            "MFA_DISABLED",
+            "GDPR_ERASURE"
     );
 
     private final AuditLogRepository auditLogRepository;
